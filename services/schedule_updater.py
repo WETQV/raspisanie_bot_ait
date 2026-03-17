@@ -1,4 +1,4 @@
-"""Логика проверки и обновления расписания с сайта."""
+"""Schedule refresh and update logic."""
 import logging
 import re
 from datetime import datetime
@@ -9,31 +9,42 @@ from scraper import ScheduleScraper
 
 logger = logging.getLogger(__name__)
 
-THROTTLE_SHORT = 60   # минут
-THROTTLE_LONG = 180  # минут
+THROTTLE_SHORT = 60
+THROTTLE_LONG = 180
 
-EXCLUDED_KEYWORDS = frozenset([
-    "абинск", "темрюк", "мостовской", "трудобеликовский",
-    "фарм", "сдоз", "тм_", "_тм", "_тб", "очной формы",
-])
+EXCLUDED_KEYWORDS = frozenset(
+    [
+        "абинск",
+        "темрюк",
+        "мостовской",
+        "трудобеликовский",
+        "фарм",
+        "сдоз",
+        "тм_",
+        "_тм",
+        "_тб",
+        "очной формы",
+    ]
+)
 
 
 def parse_date_from_filename(text: str) -> datetime | None:
-    """Извлекает дату начала недели из названия файла/ссылки."""
+    """Extract the week start date from a file title or URL."""
     match = re.search(r"(\d{2}\.\d{2}\.\d{2,4})", text)
-    if match:
-        date_str = match.group(1)
-        try:
-            if len(date_str.split(".")[-1]) == 2:
-                return datetime.strptime(date_str, "%d.%m.%y")
-            return datetime.strptime(date_str, "%d.%m.%Y")
-        except ValueError:
-            pass
-    return None
+    if not match:
+        return None
+
+    date_str = match.group(1)
+    try:
+        if len(date_str.split(".")[-1]) == 2:
+            return datetime.strptime(date_str, "%d.%m.%y")
+        return datetime.strptime(date_str, "%d.%m.%Y")
+    except ValueError:
+        return None
 
 
 class ScheduleUpdater:
-    """Логика обновления расписания."""
+    """Orchestrates finding, downloading, parsing, and sending schedule updates."""
 
     def __init__(
         self,
@@ -48,7 +59,6 @@ class ScheduleUpdater:
         self.format_week_schedule = format_week_schedule
 
     def filter_links(self, links: list[dict]) -> list[dict]:
-        """Фильтрует и сортирует ссылки на расписание."""
         candidates = []
         for link in links:
             text_lower = link["text"].lower()
@@ -57,24 +67,25 @@ class ScheduleUpdater:
                 continue
             if ".xls" in url_lower or ".xls" in text_lower:
                 continue
-            if any(kw in text_lower for kw in EXCLUDED_KEYWORDS):
+            if any(keyword in text_lower for keyword in EXCLUDED_KEYWORDS):
                 continue
-            dt = parse_date_from_filename(link["text"])
-            candidates.append((dt or datetime.min, link))
-        candidates.sort(key=lambda x: x[0], reverse=True)
+            candidates.append((parse_date_from_filename(link["text"]) or datetime.min, link))
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
         return [link for _, link in candidates]
 
     async def _fetch_links(self, scraper: ScheduleScraper) -> list[dict] | None:
         try:
             links = await scraper.get_schedule_links()
         except Exception:
-            logger.exception("Ошибка получения ссылок")
+            logger.exception("Failed to fetch links")
             await self.service.notify_admins(
                 "⚠️ Не удалось получить ссылки.",
                 "links_fetch_error",
                 THROTTLE_SHORT,
             )
             return None
+
         if not links:
             await self.service.notify_admins(
                 "⚠️ Ссылки не найдены.",
@@ -82,6 +93,7 @@ class ScheduleUpdater:
                 THROTTLE_LONG,
             )
             return None
+
         return links
 
     async def _parse_and_save(
@@ -93,10 +105,12 @@ class ScheduleUpdater:
         try:
             parser = ScheduleParser(file_path)
             data = parser.parse(self.config.group_name)
-        except Exception as e:
-            logger.exception("Ошибка парсинга PDF")
+        except Exception as exc:
+            logger.exception("PDF parsing failed")
             await self.service.notify_admins(
-                "⚠️ Ошибка парсинга: %s" % e, "parse_failed", THROTTLE_LONG,
+                f"⚠️ Ошибка парсинга: {exc}",
+                "parse_failed",
+                THROTTLE_LONG,
             )
             return None, None, False
 
@@ -118,8 +132,8 @@ class ScheduleUpdater:
         if notify_users and self.format_week_schedule:
             last_sent = await self.db.get_metadata("last_weekly_sent_period")
             if last_sent != period:
-                msg = self.format_week_schedule(period, schedule)
-                await self.service.broadcast_message(msg, document_path=file_path)
+                message_text = self.format_week_schedule(period, schedule)
+                await self.service.broadcast_message(message_text, document_path=file_path)
                 await self.db.set_metadata("last_weekly_sent_period", period)
 
         return period, schedule, True
@@ -130,8 +144,7 @@ class ScheduleUpdater:
         notify_users: bool = True,
         reason: str = "scheduled",
     ) -> tuple[str | None, list | None, bool]:
-        """Основная логика проверки обновлений."""
-        logger.info("Проверка расписания (причина: %s)", reason)
+        logger.info("Checking schedule (reason: %s)", reason)
         scraper = ScheduleScraper()
 
         links = await self._fetch_links(scraper)
@@ -141,18 +154,16 @@ class ScheduleUpdater:
         candidates = self.filter_links(links)
         if not candidates:
             await self.service.notify_admins(
-                "⚠️ Нет подходящих файлов после фильтрации.",
+                "⚠️ После фильтрации не осталось подходящих файлов.",
                 "links_filtered_empty",
                 THROTTLE_LONG,
             )
             return None, None, False
 
         target = candidates[0]
-        logger.info("Выбран файл: %s", target["text"])
+        logger.info("Selected schedule file: %s", target["text"])
 
-        file_path, _, new_hash = await scraper.download_file(
-            target["url"], target["filename"]
-        )
+        file_path, _, new_hash = await scraper.download_file(target["url"], target["filename"])
         if not file_path or not new_hash:
             await self.service.notify_admins(
                 "❌ Ошибка скачивания.",
@@ -163,8 +174,8 @@ class ScheduleUpdater:
 
         last_hash = await self.db.get_metadata("last_file_hash")
         if new_hash == last_hash:
-            logger.info("Файл не изменился")
+            logger.info("Schedule file hash unchanged")
             return None, None, False
 
-        logger.info("Новое расписание обнаружено: %s", file_path)
+        logger.info("New schedule detected: %s", file_path)
         return await self._parse_and_save(file_path, new_hash, notify_users)

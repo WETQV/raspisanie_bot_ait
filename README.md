@@ -1,299 +1,192 @@
-# Структура проекта
+# Telegram-бот расписания АИТ
 
-## Обзор
+Бот автоматически забирает PDF-расписание с сайта колледжа, парсит его, сохраняет в SQLite и рассылает обновления в зарегистрированные чаты Telegram.
 
-Бот расписания для Telegram с модульной архитектурой для АИТ в Анапе.
+## Что умеет
 
-## Структура файлов
+- Проверяет сайт по расписанию и находит новый PDF с расписанием.
+- Безопасно скачивает PDF в `downloads/` с проверкой расширения, хеша и валидности файла.
+- Парсит расписание для одной группы из PDF.
+- Хранит несколько недель и выбирает нужную по целевой дате.
+- Отправляет расписание на сегодня, на следующий учебный день и полное недельное обновление.
+- Рассылает вечернее сообщение на следующий учебный день в `19:00`.
+- Разрешает ручное обновление `/update` только администраторам.
 
-```
+## Структура проекта
+
+```text
 raspisanie_bot_ait/
-│
-├── main.py                    # 🚀 Точка входа
-├── bot.py                     # Хендлеры команд и основная логика
-├── config.py                  # Конфигурация из переменных окружения
-├── database.py                # Класс Database с единым соединением
-├── requirements.txt           # Зависимости Python
-│
-├── .env                       # Переменные окружения (сделайте основываясь на example)
-├── .env.example               # Шаблон переменных окружения
-├── .gitignore                 # Игнорируемые файлы
-│
-├── models/                    # 📦 Модели данных
-│   ├── __init__.py
-│   └── lesson.py             # Lesson, DaySchedule (dataclass)
-│
-├── services/                  # 🔧 Бизнес-логика
-│   ├── __init__.py
-│   ├── schedule_service.py   # Рассылка сообщений и уведомления админов
-│   └── schedule_updater.py   # Логика проверки и обновления расписания
-│
-├── middleware/                # 🛡️ Middleware для aiogram
-│   ├── __init__.py
-│   └── access_middleware.py  # Проверка доступа (зарегистрированные чаты/админы)
-│
-├── parser/                    # 📄 Парсер PDF расписания
-│   ├── __init__.py
-│   ├── lesson_extractor.py   # Извлечение кабинета и предмета из строки
-│   └── schedule_parser.py    # Парсинг PDF файла в структурированные данные
-│
-├── scraper/                   # 🌐 Скрапер сайта (асинхронный)
-│   ├── __init__.py
-│   ├── schedule_scraper.py   # Основной скрапер (aiohttp)
-│   ├── link_finder.py        # Поиск ссылок на файлы в HTML
-│   └── atomic_file.py        # Атомарная замена файлов с бэкапом
-│
-└── downloads/                 # 📥 Скачанные PDF файлы (создаётся автоматически)
+├── main.py
+├── bot.py
+├── config.py
+├── database.py
+├── requirements.txt
+├── .env.example
+├── middleware/
+│   └── access_middleware.py
+├── models/
+│   └── lesson.py
+├── parser/
+│   ├── lesson_extractor.py
+│   └── schedule_parser.py
+├── scraper/
+│   ├── atomic_file.py
+│   ├── link_finder.py
+│   └── schedule_scraper.py
+├── services/
+│   ├── schedule_service.py
+│   └── schedule_updater.py
+├── tests/
+│   └── test_project_hardening.py
+└── downloads/
 ```
 
-## Описание модулей
+## Ключевые модули
 
-### main.py
-**Точка входа приложения.** Загружает переменные окружения и запускает `bot.main()`.
+### `main.py`
 
-### bot.py
-Содержит:
-- Хендлеры команд (`/start`, `/today`, `/tomorrow`, `/update`)
-- Функции форматирования сообщений
-- Фоновые задачи (проверка расписания, вечерняя рассылка)
-- Lifecycle hooks (startup, shutdown)
+Точка входа. Загружает `.env` и запускает `bot.main()`.
 
-### config.py
-Класс `Config` для загрузки настроек из переменных окружения:
-- `BOT_TOKEN` — токен бота от BotFather
-- `GROUP_NAME` — название группы (по умолчанию "ИСП-3-22")
-- `ADMIN_IDS` — список ID админов через запятую (для проверки в ЛС)
+### `bot.py`
 
-### database.py
-Класс `Database`:
-- Единое соединение с БД (не создаёт новое на каждый запрос)
-- WAL режим для лучшей производительности
-- Индексы для ускорения поиска
-- Методы для работы с чатами, расписанием, метаданными
+Основная логика бота:
 
-### models/lesson.py
-Модели данных:
-- `Lesson` — один урок (пара)
-- `DaySchedule` — расписание на день
+- команды `/start`, `/today`, `/tomorrow`, `/update`;
+- форматирование сообщений;
+- планировщик фоновых задач;
+- восстановление состояния при старте;
+- выбор следующего учебного дня с пропуском воскресенья.
 
-### services/schedule_service.py
-`ScheduleService`:
-- `broadcast_message()` — рассылка во все чаты с rate limiting
-- `notify_admins()` — уведомления админов с throttle
-- Обработка ошибок Telegram API (автоудаление заблокированных чатов)
+### `config.py`
 
-### services/schedule_updater.py
-`ScheduleUpdater`:
-- `check_and_update()` — основная логика проверки обновлений
-- `filter_links()` — фильтрация ссылок на расписание
-- `_fetch_links()` — получение ссылок с сайта
-- `_parse_and_save()` — парсинг и сохранение расписания
+Чтение настроек из переменных окружения:
 
-### middleware/access_middleware.py
-`AccessMiddleware`:
-- Пропускает только зарегистрированные чаты и админов
-- Показывает сообщение об ограничении для `/start` от неавторизованных
+- `BOT_TOKEN`
+- `GROUP_NAME`
+- `ADMIN_IDS`
 
-### parser/lesson_extractor.py
-`LessonExtractor`:
-- Извлекает кабинет и предмет из сырой строки PDF
-- Несколько стратегий поиска кабинета
-- Очистка Unicode, удаление преподавателя, автозамены
+### `database.py`
 
-### parser/schedule_parser.py
-`ScheduleParser`:
-- Парсит PDF файл расписания
-- Извлекает метаданные (период)
-- Фильтрует строки по группе
-- Обрабатывает строки в структурированное расписание
+Слой доступа к SQLite:
 
-### scraper/schedule_scraper.py
-`ScheduleScraper` (асинхронный):
-- `get_schedule_links()` — получение ссылок с сайта (aiohttp)
-- `download_file()` — скачивание файла (aiohttp + AtomicFileReplace)
-- SHA256 хеширование по чанкам
+- одно общее соединение;
+- идемпотентный `connect()`;
+- таблицы `chats`, `schedule`, `metadata`;
+- выбор нужного `week_period` по дате, а не по последней вставленной записи.
 
-### scraper/link_finder.py
-`LinkFinder`:
-- Поиск ссылок на файлы в HTML (несколько стратегий)
-- Дедупликация URL
-- Извлечение заголовков файлов
+### `services/schedule_updater.py`
 
-### scraper/atomic_file.py
-`AtomicFileReplace`:
-- Контекстный менеджер для атомарной замены файлов
-- Автоматический бэкап и откат при ошибке
+Оркестрация обновления расписания:
+
+- получение списка ссылок;
+- фильтрация лишних файлов;
+- скачивание PDF;
+- парсинг и сохранение;
+- запуск рассылки при новом расписании.
+
+### `services/schedule_service.py`
+
+Отправка сообщений:
+
+- рассылка по всем зарегистрированным чатам;
+- удаление чатов, где бот заблокирован;
+- уведомления администраторам с throttle;
+- отправка PDF и текста отдельными сообщениями, без длинного `caption`.
+
+### `scraper/schedule_scraper.py`
+
+Асинхронный скрапер:
+
+- получает HTML страницы расписания;
+- извлекает ссылки на файлы;
+- безопасно сохраняет только `pdf`;
+- защищается от path traversal через имя файла.
+
+### `parser/schedule_parser.py`
+
+PDF-парсер:
+
+- извлекает период недели;
+- находит строки нужной группы;
+- собирает структуру расписания по дням.
+
+### `parser/lesson_extractor.py`
+
+Нормализует содержимое ячеек PDF:
+
+- выделяет кабинет;
+- чистит текст;
+- убирает хвосты с преподавателями;
+- применяет замены предметов.
 
 ## Поток данных
 
-```
-1. Скрапер получает ссылки с сайта
-   ↓
-2. ScheduleUpdater фильтрует ссылки
-   ↓
-3. Скачивание PDF файла
-   ↓
-4. ScheduleParser парсит PDF
-   ↓
-5. LessonExtractor извлекает кабинет и предмет
-   ↓
-6. Сохранение в Database
-   ↓
-7. ScheduleService рассылает сообщения
+```text
+1. scraper.get_schedule_links()
+2. services.schedule_updater.filter_links()
+3. scraper.download_file()
+4. parser.schedule_parser.parse()
+5. parser.lesson_extractor.extract()
+6. database.save_schedule()
+7. services.schedule_service.broadcast_message()
 ```
 
-## Зависимости
+## Команды бота
 
-- `aiogram` — Telegram Bot API
-- `aiohttp` — асинхронные HTTP запросы
-- `aiofiles` — асинхронная работа с файлами
-- `aiosqlite` — асинхронная работа с SQLite
-- `apscheduler` — планировщик задач
-- `pdfplumber` — парсинг PDF
-- `beautifulsoup4` — парсинг HTML
-- `python-dotenv` — загрузка переменных окружения
+- `/start` — регистрирует чат, если команду вызвал администратор.
+- `/today` — показывает расписание на сегодня.
+- `/tomorrow` — показывает расписание на следующий учебный день.
+- `/update` — вручную запускает обновление расписания. Доступно только `ADMIN_IDS`, с простым throttle.
 
-## Запуск
+## Доступ и регистрация чатов
 
-**Способ запуска:**
-
-```bash
-python main.py
-```
+- Бот отвечает только в зарегистрированных чатах и администраторам.
+- Новый чат может зарегистрировать только пользователь, чей Telegram ID указан в `ADMIN_IDS`.
+- Если `/start` отправит не админ в незарегистрированном чате, бот ответит, что регистрация ограничена.
+- После регистрации чата бот может отвечать всем участникам на обычные команды чтения расписания.
+- Ручное обновление `/update` разрешено только администраторам.
 
 ## Переменные окружения
 
-Создайте файл `.env` на основе `.env.example`:
+Создайте `.env` на основе `.env.example`.
 
-```env
-BOT_TOKEN=твой_токен_от_BotFather
-GROUP_NAME=ИСП-3-22
-ADMIN_IDS=735412766
-```
-
-## База данных
-
-Файл `bot_database.db` создаётся автоматически при первом запуске.
-
-Таблицы:
-- `chats` — зарегистрированные чаты
-- `schedule` — расписание занятий
-- `metadata` — метаданные (хеши, даты рассылок)
-
-## Логирование
-
-Логи выводятся в stdout/stderr. При запуске через systemd доступны через `journalctl -u ait-bot`.
-
-
-# Пример деплоя на Debian 11 (Python 3.12)
-
-Инструкция по развёртыванию бота расписания на VPS с Debian 11.
-
-## 1) Установка Python 3.12
-
-```bash
-apt update
-apt install -y \
-  build-essential \
-  wget \
-  libssl-dev \
-  zlib1g-dev \
-  libbz2-dev \
-  libreadline-dev \
-  libsqlite3-dev \
-  libffi-dev \
-  liblzma-dev \
-  tk-dev \
-  uuid-dev \
-  xz-utils \
-  libncursesw5-dev \
-  libgdbm-dev \
-  libdb5.3-dev \
-  libexpat1-dev
-
-cd /usr/src
-wget https://www.python.org/ftp/python/3.12.5/Python-3.12.5.tgz
-tar xzf Python-3.12.5.tgz
-cd Python-3.12.5
-
-./configure --enable-optimizations
-make -j"$(nproc)"
-make altinstall
-```
-
-Проверка:
-```bash
-python3.12 --version
-```
-
-## 2) Подготовка проекта
-
-### 2.1 Клонирование/загрузка проекта
-
-```bash
-# Если используете git:
-git clone https://github.com/WETQV/raspisanie_ait_bot.git /root/raspisanie_bot_ait
-cd /root/raspisanie_bot_ait
-
-# Или загрузите файлы через scp/sftp в /root/raspisanie_bot_ait
-```
-
-### 2.2 Создание виртуального окружения
-
-```bash
-cd /root/raspisanie_bot_ait
-python3.12 -m venv venv
-source venv/bin/activate
-python --version  # Должно быть 3.12.x
-```
-
-### 2.3 Установка зависимостей
-
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-### 2.4 Настройка переменных окружения
-
-```bash
-# Скопируйте шаблон
-cp .env.example .env
-
-# Отредактируйте .env и укажите реальный токен бота
-nano .env
-```
-
-Содержимое `.env`:
 ```env
 BOT_TOKEN=ваш_токен_от_BotFather
 GROUP_NAME=ИСП-3-22
-ADMIN_IDS=735412766
+ADMIN_IDS=735412766,123456789
 ```
 
-**ВАЖНО:** Токен должен быть получен от @BotFather.
+### Примечания
 
-## 3) Первый запуск (проверка)
+- `BOT_TOKEN` обязателен.
+- `ADMIN_IDS` — список числовых Telegram ID через запятую.
+- `GROUP_NAME` должен совпадать с названием группы в PDF.
+
+## Установка и запуск
+
+### Windows / локальный запуск
 
 ```bash
-cd /root/raspisanie_bot_ait
-source venv/bin/activate
+python -m venv venv
+venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
 python main.py
 ```
 
-Остановить: `Ctrl+C`
-
-Если всё работает — переходим к настройке systemd.
-
-## 4) Настройка systemd (автозапуск)
-
-Создайте файл `/etc/systemd/system/ait-bot.service`:
+### Linux / Debian
 
 ```bash
-nano /etc/systemd/system/ait-bot.service
+python3.12 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
 ```
 
-Содержимое:
+## Запуск через systemd
+
+Пример unit-файла:
 
 ```ini
 [Unit]
@@ -313,41 +206,63 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 ```
 
-Либо создайте файл на своём устройстве и перекиньте на сервер.
-
-Применить и запустить:
+Команды управления:
 
 ```bash
 systemctl daemon-reload
 systemctl enable ait-bot
 systemctl start ait-bot
+systemctl status ait-bot
+journalctl -u ait-bot -f
 ```
 
-### Управление сервисом
+## База данных
+
+Файл `bot_database.db` создаётся автоматически при первом запуске.
+
+Таблицы:
+
+- `chats` — зарегистрированные чаты и `message_thread_id`;
+- `schedule` — строки расписания по неделям и дням;
+- `metadata` — служебные значения: хеши, даты рассылок, throttle.
+
+## Зависимости
+
+- `aiogram` — Telegram Bot API
+- `aiohttp` — HTTP-запросы
+- `aiosqlite` — SQLite
+- `apscheduler` — фоновые задачи
+- `pdfplumber` — чтение PDF
+- `beautifulsoup4` — разбор HTML
+- `python-dotenv` — загрузка `.env`
+- `aiofiles` — асинхронная работа с файлами
+- `requests` — вспомогательная HTTP-зависимость
+
+## Проверки
+
+Статическая компиляция:
 
 ```bash
-# Проверить статус
-systemctl status ait-bot
-
-# Остановить
-systemctl stop ait-bot
-
-# Перезапустить
-systemctl restart ait-bot
-
-# Посмотреть логи (в реальном времени)
-journalctl -u ait-bot -f
-
-# Посмотреть последние 100 строк логов
-journalctl -u ait-bot -n 100
+python -m compileall .
 ```
 
-### Доступ и регистрация групп
+Тесты:
 
-- Команды бота обрабатываются только в зарегистрированных чатах и у пользователей из ADMIN_IDS (в т.ч. в личке).
+```bash
+python -m unittest discover -s tests -v
+```
 
-- Зарегистрировать новую группу может только админ: добавьте бота в группу и отправь /start от своего аккаунта (твой ID должен быть в ADMIN_IDS). После этого бот работает для всех участников этой группы.
+Сейчас тесты покрывают:
 
-- Если /start напишет не админ в ещё не зарегистрированном чате, бот ответит: «Регистрация новых групп ограничена» и не добавит чат.
+- идемпотентное подключение к БД;
+- выбор корректной недели по дате;
+- защиту от path traversal в имени файла;
+- экранирование HTML в сообщениях;
+- логику следующего учебного дня;
+- раздельную отправку PDF и текста.
 
-Вот и всё. Теперь у вас будет личный бот для расписания. Остаётся добавить в группу, и написать `/start`.
+## Ограничения
+
+- Парсер ориентирован на конкретную структуру PDF с сайта колледжа.
+- Если структура таблицы в PDF изменится, потребуется доработка `schedule_parser.py`.
+- Бот рассчитан на одну основную группу из `GROUP_NAME`.

@@ -1,9 +1,10 @@
 """Database layer with a single connection and connection pooling."""
-import aiosqlite
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
+
+import aiosqlite
 
 logger = logging.getLogger(__name__)
 
@@ -11,23 +12,26 @@ DB_NAME = "bot_database.db"
 
 
 class Database:
-    """Обёртка над aiosqlite с единственным соединением."""
+    """Wrapper around aiosqlite with a single shared connection."""
 
     def __init__(self, db_path: str = DB_NAME):
         self.db_path = db_path
         self._connection: Optional[aiosqlite.Connection] = None
 
     async def connect(self) -> None:
-        """Установить соединение с БД."""
+        """Open the database connection once."""
+        if self._connection is not None:
+            return
+
         self._connection = await aiosqlite.connect(self.db_path)
         self._connection.row_factory = aiosqlite.Row
         await self._connection.execute("PRAGMA journal_mode=WAL")
         await self._connection.execute("PRAGMA foreign_keys=ON")
         await self._init_tables()
-        logger.info("БД подключена: %s", self.db_path)
+        logger.info("DB connected: %s", self.db_path)
 
     async def close(self) -> None:
-        """Закрыть соединение."""
+        """Close the shared connection."""
         if self._connection:
             await self._connection.close()
             self._connection = None
@@ -35,11 +39,12 @@ class Database:
     @property
     def conn(self) -> aiosqlite.Connection:
         if self._connection is None:
-            raise RuntimeError("База данных не подключена. Вызовите connect() сначала.")
+            raise RuntimeError("Database is not connected. Call connect() first.")
         return self._connection
 
     async def _init_tables(self) -> None:
-        await self.conn.executescript("""
+        await self.conn.executescript(
+            """
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id INTEGER PRIMARY KEY,
                 chat_title TEXT,
@@ -69,18 +74,71 @@ class Database:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
-        """)
-        # Миграция: добавляем message_thread_id если колонки нет
+            """
+        )
+
         async with self.conn.execute("PRAGMA table_info(chats)") as cursor:
             columns = [row[1] for row in await cursor.fetchall()]
             if "message_thread_id" not in columns:
-                logger.info("Миграция: добавляю колонку message_thread_id...")
+                logger.info("Migration: adding message_thread_id column...")
                 await self.conn.execute(
                     "ALTER TABLE chats ADD COLUMN message_thread_id INTEGER"
                 )
         await self.conn.commit()
 
-    # --- Методы для работы с чатами ---
+    @staticmethod
+    def _parse_week_period(week_period: str) -> Optional[tuple[date, date]]:
+        try:
+            start_str, end_str = [part.strip() for part in week_period.split("-", 1)]
+            return (
+                datetime.strptime(start_str, "%d.%m.%Y").date(),
+                datetime.strptime(end_str, "%d.%m.%Y").date(),
+            )
+        except (ValueError, AttributeError, IndexError):
+            return None
+
+    async def _resolve_week_period(
+        self,
+        group_name: str,
+        target_date: date,
+    ) -> Optional[str]:
+        async with self.conn.execute(
+            """
+            SELECT DISTINCT week_period
+            FROM schedule
+            WHERE group_name = ?
+            """,
+            (group_name,),
+        ) as cursor:
+            periods = [row[0] for row in await cursor.fetchall()]
+
+        if not periods:
+            return None
+
+        parsed_periods: list[tuple[date, date, str]] = []
+        for period in periods:
+            parsed = self._parse_week_period(period)
+            if parsed:
+                parsed_periods.append((parsed[0], parsed[1], period))
+
+        if not parsed_periods:
+            return periods[-1]
+
+        parsed_periods.sort(key=lambda item: item[0])
+
+        for start_date, end_date, period in parsed_periods:
+            if start_date <= target_date <= end_date:
+                return period
+
+        future_periods = [
+            (start_date, period)
+            for start_date, _, period in parsed_periods
+            if start_date > target_date
+        ]
+        if future_periods:
+            return min(future_periods, key=lambda item: item[0])[1]
+
+        return max(parsed_periods, key=lambda item: item[1])[2]
 
     async def add_chat(
         self,
@@ -110,7 +168,8 @@ class Database:
 
     async def is_chat_registered(self, chat_id: int) -> bool:
         async with self.conn.execute(
-            "SELECT 1 FROM chats WHERE chat_id = ?", (chat_id,)
+            "SELECT 1 FROM chats WHERE chat_id = ?",
+            (chat_id,),
         ) as cursor:
             return await cursor.fetchone() is not None
 
@@ -118,15 +177,17 @@ class Database:
         await self.conn.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
         await self.conn.commit()
 
-    # --- Методы для расписания ---
-
     async def save_schedule(
-        self, group_name: str, week_period: str, schedule_data: list[dict]
+        self,
+        group_name: str,
+        week_period: str,
+        schedule_data: list[dict],
     ) -> None:
         await self.conn.execute(
             "DELETE FROM schedule WHERE group_name = ? AND week_period = ?",
             (group_name, week_period),
         )
+
         rows = []
         for day in schedule_data:
             day_name = day["day"]
@@ -146,6 +207,7 @@ class Database:
                         lesson.get("room"),
                     )
                 )
+
         await self.conn.executemany(
             """
             INSERT INTO schedule
@@ -162,27 +224,15 @@ class Database:
         group_name: str,
         day_name: str,
         week_period: Optional[str] = None,
+        target_date: Optional[date] = None,
     ) -> tuple[Optional[str], list]:
         if not week_period:
-            async with self.conn.execute(
-                """SELECT week_period FROM schedule
-                   WHERE group_name = ?
-                   ORDER BY id DESC LIMIT 1""",
-                (group_name,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    return None, []
-                week_period = row[0]
-
-            # Проверка актуальности периода
-            try:
-                end_date_str = week_period.split("-")[1].strip()
-                end_date = datetime.strptime(end_date_str, "%d.%m.%Y")
-                if end_date.date() < datetime.now().date() - timedelta(days=1):
-                    return None, []
-            except Exception:
-                pass
+            week_period = await self._resolve_week_period(
+                group_name,
+                target_date or datetime.now().date(),
+            )
+            if not week_period:
+                return None, []
 
         async with self.conn.execute(
             """
@@ -194,18 +244,16 @@ class Database:
             (group_name, day_name, week_period),
         ) as cursor:
             rows = await cursor.fetchall()
-            # Return as list of tuples for backward compatibility
             result = [
                 (row[0], row[1], row[2], row[3], row[4] or "")
                 for row in rows
             ]
             return week_period, result
 
-    # --- Метаданные ---
-
     async def get_metadata(self, key: str) -> Optional[str]:
         async with self.conn.execute(
-            "SELECT value FROM metadata WHERE key = ?", (key,)
+            "SELECT value FROM metadata WHERE key = ?",
+            (key,),
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
@@ -221,11 +269,8 @@ class Database:
         await self.conn.commit()
 
 
-# Глобальный экземпляр (единственный допустимый глобал)
 db = Database()
 
-
-# --- Обратная совместимость: модульные функции делегируют в db ---
 
 async def init_db() -> None:
     await db.connect()
@@ -249,7 +294,9 @@ async def is_chat_registered(chat_id: int) -> bool:
 
 
 async def save_schedule(
-    group_name: str, week_period: str, schedule_data: list[dict]
+    group_name: str,
+    week_period: str,
+    schedule_data: list[dict],
 ) -> None:
     await db.save_schedule(group_name, week_period, schedule_data)
 
@@ -258,8 +305,14 @@ async def get_schedule_for_day(
     group_name: str,
     day_name: str,
     week_period: Optional[str] = None,
+    target_date: Optional[date] = None,
 ) -> tuple[Optional[str], list]:
-    return await db.get_schedule_for_day(group_name, day_name, week_period)
+    return await db.get_schedule_for_day(
+        group_name,
+        day_name,
+        week_period,
+        target_date,
+    )
 
 
 async def get_metadata(key: str) -> Optional[str]:

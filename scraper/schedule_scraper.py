@@ -1,7 +1,8 @@
-"""Асинхронный скрапер сайта расписания."""
+"""Async scraper for the schedule website."""
 import asyncio
 import hashlib
 import logging
+import random
 import re
 from pathlib import Path
 from urllib.parse import unquote
@@ -9,8 +10,8 @@ from urllib.parse import unquote
 import aiohttp
 from bs4 import BeautifulSoup
 
-from .link_finder import LinkFinder
 from .atomic_file import AtomicFileReplace
+from .link_finder import LinkFinder
 
 logger = logging.getLogger(__name__)
 
@@ -27,42 +28,64 @@ HASH_CHUNK_SIZE = 65536
 
 
 def _validate_pdf_sync(filepath: Path) -> tuple[bool, str | None]:
-    """Синхронная проверка валидности PDF."""
+    """Validate that the downloaded file looks like a real PDF."""
     if not filepath.exists():
         return False, "Файл не существует"
+
     size = filepath.stat().st_size
     if size == 0:
         return False, "Файл пустой (0 байт)"
     if size < MIN_PDF_SIZE:
-        return False, "Файл слишком маленький (минимум %s КБ)" % (MIN_PDF_SIZE // 1024)
+        return False, f"Файл слишком маленький (минимум {MIN_PDF_SIZE // 1024} КБ)"
+
     try:
         if filepath.read_bytes()[:4] != b"%PDF":
             return False, "Неверный заголовок PDF"
-    except Exception as e:
-        return False, "Ошибка чтения: %s" % e
+    except Exception as exc:
+        return False, f"Ошибка чтения: {exc}"
+
     try:
         import pdfplumber
+
         with pdfplumber.open(filepath) as pdf:
             if len(pdf.pages) == 0:
                 return False, "PDF не содержит страниц"
     except ImportError:
         pass
-    except Exception as e:
-        return False, "Ошибка PDF: %s" % e
+    except Exception as exc:
+        return False, f"Ошибка PDF: {exc}"
+
     return True, None
 
 
 def _calculate_hash_sync(filepath: Path) -> str:
-    """Синхронный расчёт SHA256 по чанкам."""
+    """Calculate SHA256 in chunks."""
     hasher = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        while chunk := f.read(HASH_CHUNK_SIZE):
+    with open(filepath, "rb") as file_obj:
+        while chunk := file_obj.read(HASH_CHUNK_SIZE):
             hasher.update(chunk)
     return hasher.hexdigest()
 
 
+def _sanitize_filename(filename: str) -> str:
+    safe_name = Path(filename).name.strip()
+    if not safe_name:
+        raise ValueError("Empty filename")
+    if Path(safe_name).suffix.lower() != ".pdf":
+        raise ValueError("Only PDF files are allowed")
+    return safe_name
+
+
+def _resolve_download_target(download_path: Path, filename: str) -> Path:
+    safe_name = _sanitize_filename(filename)
+    target = (download_path / safe_name).resolve()
+    if target.parent != download_path.resolve():
+        raise ValueError("Resolved file path escapes downloads directory")
+    return target
+
+
 class ScheduleScraper:
-    """Асинхронный скрапер расписания."""
+    """Async scraper for fetching and downloading schedule files."""
 
     def __init__(self):
         self.download_path = Path(__file__).resolve().parent.parent / DOWNLOAD_DIR
@@ -70,9 +93,8 @@ class ScheduleScraper:
         self.link_finder = LinkFinder(BASE_URL)
 
     async def get_schedule_links(self) -> list[dict]:
-        """Получает ссылки на расписание с сайта."""
-        delay = __import__("random").uniform(1, 5)
-        logger.info("Ожидание %.2f сек (jitter)...", delay)
+        delay = random.uniform(1, 5)
+        logger.info("Waiting %.2f seconds before request", delay)
         await asyncio.sleep(delay)
 
         timeout = aiohttp.ClientTimeout(total=15)
@@ -82,7 +104,7 @@ class ScheduleScraper:
                 html = await response.text()
 
         if "just a moment" in html.lower() or "cloudflare" in html.lower():
-            logger.warning("Возможна защита от ботов (Cloudflare/WAF)")
+            logger.warning("Possible anti-bot protection detected")
 
         soup = BeautifulSoup(html, "html.parser")
         links = self.link_finder.find_all(soup)
@@ -90,82 +112,103 @@ class ScheduleScraper:
         filtered = [
             link
             for link in links
-            if "расписание" in link["text"].lower()
-            or "raspis" in link["url"].lower()
+            if "расписание" in link["text"].lower() or "raspis" in link["url"].lower()
         ]
         if filtered:
-            logger.info("Найдено подходящих ссылок: %d", len(filtered))
+            logger.info("Suitable links found: %d", len(filtered))
             return filtered
         if links:
-            logger.warning("Ссылки найдены, но фильтр не совпал")
+            logger.warning("Links found, but no text matched the filter")
             return links
         return []
 
     async def download_file(
-        self, url: str, filename: str
+        self,
+        url: str,
+        filename: str,
     ) -> tuple[str | None, bool, str | None]:
-        """Скачивает файл асинхронно. Возвращает (path, is_changed, hash)."""
-        target = self.download_path / filename
+        try:
+            target = _resolve_download_target(self.download_path, filename)
+        except ValueError as exc:
+            logger.error("Unsafe generated filename rejected: %s", exc)
+            return None, False, None
 
         try:
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(headers=HEADERS) as session:
                 async with session.get(url, timeout=timeout) as response:
                     response.raise_for_status()
-                    cd = response.headers.get("Content-Disposition")
-                    if cd:
-                        m = re.search(
+
+                    content_disposition = response.headers.get("Content-Disposition")
+                    if content_disposition:
+                        match = re.search(
                             r"filename\*=UTF-8''(.+)|filename=\"?([^\";]+)\"?",
-                            cd,
+                            content_disposition,
                         )
-                        if m:
-                            real_name = (m.group(1) or m.group(2) or "").strip()
+                        if match:
+                            real_name = (match.group(1) or match.group(2) or "").strip()
                             if real_name:
-                                filename = unquote(real_name)
-                                target = self.download_path / filename
+                                try:
+                                    target = _resolve_download_target(
+                                        self.download_path,
+                                        unquote(real_name),
+                                    )
+                                except ValueError as exc:
+                                    logger.warning(
+                                        "Ignoring unsafe Content-Disposition filename %r: %s",
+                                        real_name,
+                                        exc,
+                                    )
 
                     with AtomicFileReplace(target) as atomic:
                         total = 0
-                        with open(atomic.temp, "wb") as f:
+                        with open(atomic.temp, "wb") as file_obj:
                             async for chunk in response.content.iter_chunked(8192):
                                 if chunk:
-                                    f.write(chunk)
+                                    file_obj.write(chunk)
                                     total += len(chunk)
-                        logger.info("Скачано %d байт", total)
+                        logger.info("Downloaded %d bytes", total)
 
                         loop = asyncio.get_running_loop()
-                        is_valid, err = await loop.run_in_executor(
-                            None, _validate_pdf_sync, atomic.temp
+                        is_valid, error = await loop.run_in_executor(
+                            None,
+                            _validate_pdf_sync,
+                            atomic.temp,
                         )
                         if not is_valid:
-                            logger.error("Файл невалидный: %s", err)
+                            logger.error("Downloaded file is invalid: %s", error)
                             return None, False, None
 
                         new_hash = await loop.run_in_executor(
-                            None, _calculate_hash_sync, atomic.temp
+                            None,
+                            _calculate_hash_sync,
+                            atomic.temp,
                         )
                         old_hash = None
                         if target.exists():
                             old_hash = await loop.run_in_executor(
-                                None, _calculate_hash_sync, target
+                                None,
+                                _calculate_hash_sync,
+                                target,
                             )
 
                         if new_hash == old_hash:
-                            logger.info("Файл не изменился (хеш совпадает)")
+                            logger.info("File hash unchanged")
                             return str(target), False, new_hash
-                        atomic.commit()
-            logger.info("Файл сохранён: %s", target)
-            return str(target), True, new_hash
 
+                        atomic.commit()
+
+            logger.info("File saved: %s", target)
+            return str(target), True, new_hash
         except asyncio.TimeoutError:
-            logger.error("Таймаут при скачивании: %s", url)
+            logger.error("Download timeout for %s", url)
             return None, False, None
-        except aiohttp.ClientError as e:
-            logger.error("Ошибка сети: %s", e)
+        except aiohttp.ClientError as exc:
+            logger.error("Network error: %s", exc)
             return None, False, None
-        except OSError as e:
-            logger.error("Ошибка ФС: %s", e)
+        except OSError as exc:
+            logger.error("Filesystem error: %s", exc)
             return None, False, None
-        except Exception as e:
-            logger.exception("Ошибка скачивания: %s", e)
+        except Exception as exc:
+            logger.exception("Unexpected download error: %s", exc)
             return None, False, None

@@ -1,16 +1,13 @@
-"""Сервис рассылки и уведомлений."""
+"""Messaging and admin notification service."""
 import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import FSInputFile
-from aiogram.exceptions import (
-    TelegramForbiddenError,
-    TelegramBadRequest,
-    TelegramRetryAfter,
-)
 
 if TYPE_CHECKING:
     from aiogram import Bot
@@ -20,10 +17,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 BROADCAST_DELAY_SEC = 0.05
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 class ScheduleService:
-    """Сервис для рассылки и уведомлений админов."""
+    """Service for broadcasts and admin alerts."""
 
     def __init__(self, bot: "Bot", config: "Config", db: "Database"):
         self.bot = bot
@@ -31,43 +29,39 @@ class ScheduleService:
         self.db = db
 
     async def broadcast_message(
-        self, text: str, document_path: str | None = None
+        self,
+        text: str,
+        document_path: str | None = None,
     ) -> int:
-        """Рассылка сообщения во все зарегистрированные чаты.
-        Возвращает количество успешно отправленных сообщений.
-        """
         chats = await self.db.get_chats()
         count = 0
+
         for chat_id, thread_id in chats:
             try:
                 await self._send_to_chat(chat_id, thread_id, text, document_path)
                 count += 1
-            except TelegramRetryAfter as e:
-                logger.warning("Rate limit! Жду %s сек", e.retry_after)
-                await asyncio.sleep(e.retry_after)
+            except TelegramRetryAfter as exc:
+                logger.warning("Rate limit hit, waiting %s sec", exc.retry_after)
+                await asyncio.sleep(exc.retry_after)
                 try:
-                    await self._send_to_chat(
-                        chat_id, thread_id, text, document_path
-                    )
+                    await self._send_to_chat(chat_id, thread_id, text, document_path)
                     count += 1
                 except Exception:
-                    logger.exception("Повторная ошибка для чата %s", chat_id)
+                    logger.exception("Repeated send error for chat %s", chat_id)
             except TelegramForbiddenError:
-                logger.info("Бот заблокирован в чате %s, удаляю", chat_id)
+                logger.info("Bot removed from chat %s, deleting from registry", chat_id)
                 await self.db.remove_chat(chat_id)
-            except TelegramBadRequest as e:
-                if "chat not found" in str(e).lower():
+            except TelegramBadRequest as exc:
+                if "chat not found" in str(exc).lower():
                     await self.db.remove_chat(chat_id)
                 else:
-                    logger.warning(
-                        "Ошибка запроса для чата %s: %s", chat_id, e
-                    )
-            except Exception as e:
-                logger.warning("Ошибка рассылки в чат %s: %s", chat_id, e)
+                    logger.warning("Telegram bad request for chat %s: %s", chat_id, exc)
+            except Exception as exc:
+                logger.warning("Broadcast error for chat %s: %s", chat_id, exc)
 
             await asyncio.sleep(BROADCAST_DELAY_SEC)
 
-        logger.info("Рассылка завершена: %d сообщений", count)
+        logger.info("Broadcast complete: %d messages", count)
         return count
 
     async def _send_to_chat(
@@ -81,30 +75,32 @@ class ScheduleService:
             await self.bot.send_document(
                 chat_id,
                 FSInputFile(document_path),
-                caption=text,
+                caption="📎 Актуальный PDF расписания",
                 message_thread_id=thread_id,
             )
-        else:
-            await self.bot.send_message(
-                chat_id, text, message_thread_id=thread_id
-            )
+
+        await self.bot.send_message(
+            chat_id,
+            text,
+            message_thread_id=thread_id,
+        )
 
     @staticmethod
     async def _can_notify(
-        db: "Database", throttle_key: str, interval_minutes: int
+        db: "Database",
+        throttle_key: str,
+        interval_minutes: int,
     ) -> bool:
         last_ts = await db.get_metadata(throttle_key)
         if not last_ts:
             return True
+
         try:
             last_dt = datetime.fromisoformat(last_ts)
         except ValueError:
             return True
-        from zoneinfo import ZoneInfo
-        moscow_tz = ZoneInfo("Europe/Moscow")
-        return datetime.now(moscow_tz) - last_dt >= timedelta(
-            minutes=interval_minutes
-        )
+
+        return datetime.now(MOSCOW_TZ) - last_dt >= timedelta(minutes=interval_minutes)
 
     async def notify_admins(
         self,
@@ -114,22 +110,19 @@ class ScheduleService:
     ) -> None:
         if not self.config.admin_ids:
             return
-        if not await self._can_notify(
-            self.db, throttle_key, interval_minutes
-        ):
+        if not await self._can_notify(self.db, throttle_key, interval_minutes):
             return
+
         sent = 0
         for admin_id in self.config.admin_ids:
             try:
                 await self.bot.send_message(admin_id, text)
                 sent += 1
-            except Exception as e:
-                logger.warning(
-                    "Ошибка уведомления админа %s: %s", admin_id, e
-                )
+            except Exception as exc:
+                logger.warning("Admin notification error for %s: %s", admin_id, exc)
+
         if sent:
-            from zoneinfo import ZoneInfo
-            moscow_tz = ZoneInfo("Europe/Moscow")
             await self.db.set_metadata(
-                throttle_key, datetime.now(moscow_tz).isoformat()
+                throttle_key,
+                datetime.now(MOSCOW_TZ).isoformat(),
             )
