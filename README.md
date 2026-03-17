@@ -261,6 +261,11 @@ python -m unittest discover -s tests -v
 - логику следующего учебного дня;
 - раздельную отправку PDF и текста.
 
+Дополнительные документы:
+
+- [DEPLOY_DEBIAN11.md](/D:/GIT_HYPER/raspisanie_bot_ait/docs/DEPLOY_DEBIAN11.md)
+- [TEST_SCENARIOS.md](/D:/GIT_HYPER/raspisanie_bot_ait/docs/TEST_SCENARIOS.md)
+
 ## Ограничения
 
 - Парсер ориентирован на конкретную структуру PDF с сайта колледжа.
