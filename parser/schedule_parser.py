@@ -1,9 +1,33 @@
-"""Парсер расписания из PDF."""
-import pdfplumber
+"""Coordinate-based timetable parser for the college PDF layout."""
+
+from __future__ import annotations
+
 import re
+from dataclasses import dataclass
 from typing import Optional
 
-from .lesson_extractor import LessonExtractor, LessonInfo
+import pdfplumber
+
+from .lesson_extractor import LessonExtractor
+from .subject_alias_catalog import normalize_subject_alias
+
+DAY_NAMES = [
+    "ПОНЕДЕЛЬНИК",
+    "ВТОРНИК",
+    "СРЕДА",
+    "ЧЕТВЕРГ",
+    "ПЯТНИЦА",
+    "СУББОТА",
+]
+
+DAY_X_RANGES = [
+    (164.0, 223.9),
+    (224.0, 284.1),
+    (284.2, 344.1),
+    (344.2, 404.1),
+    (404.2, 464.3),
+    (464.4, 532.2),
+]
 
 PAIR_TIMES = {
     1: "08:00-09:20",
@@ -13,25 +37,20 @@ PAIR_TIMES = {
     5: "14:10-15:30",
     6: "15:40-17:00",
 }
-TIME_TO_NUM = {v: k for k, v in PAIR_TIMES.items()}
 
-COLUMN_GROUP = 0
-COLUMN_LESSON_NUM = 2
-COLUMN_TIME = 3
-COLUMN_DAYS_START = 4
-DAY_COLUMNS = [
-    (COLUMN_DAYS_START + i, day)
-    for i, day in enumerate(
-        [
-            "ПОНЕДЕЛЬНИК",
-            "ВТОРНИК",
-            "СРЕДА",
-            "ЧЕТВЕРГ",
-            "ПЯТНИЦА",
-            "СУББОТА",
-        ]
-    )
-]
+TEACHER_RE = re.compile(r"\s+[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.?)?\s*$")
+LEADING_TEACHER_RE = re.compile(r"^[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.?\s*")
+TIME_RE = re.compile(r"^\d{2}\.\d{2}-\d{2}\.\d{2}$")
+GROUP_RE = re.compile(r"[А-ЯЁ]{2,}-\d-\d{2}")
+
+
+@dataclass
+class Lesson:
+    num: int
+    time: str
+    raw: str
+    subject: str
+    room: Optional[str]
 
 
 class ScheduleParser:
@@ -39,144 +58,288 @@ class ScheduleParser:
         self.pdf_path = pdf_path
         self.extractor = LessonExtractor()
 
-    def _extract_lesson_info(
-        self, raw_content: str
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Возвращает (subject, room) для обратной совместимости."""
-        info = self.extractor.extract(raw_content)
-        subject = info.subject or ""
-        room = info.room
-        if not subject.replace(".", "").strip() and not room:
-            return None, None
-        return subject, room
+    @staticmethod
+    def _normalize_gap(prev_x1: float, next_x0: float, prev_text: str, next_text: str) -> str:
+        gap = next_x0 - prev_x1
+        if gap <= 0.8:
+            return ""
+        if prev_text.endswith((".", "-", "/")):
+            return ""
+        if next_text in {".", ",", ";", ":", ")", "/"}:
+            return ""
+        return " "
 
-    def _normalize_time(
-        self, raw_time: str
-    ) -> tuple[Optional[int], Optional[str]]:
-        if not raw_time:
-            return None, None
-        clean_time = raw_time.replace(".", ":").replace(" ", "").strip()
-        clean_time = clean_time.replace("–", "-").replace("_", "-")
-        time_match = re.search(
-            r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", clean_time
+    def _split_char_lines(self, chars: list[dict], tolerance: float = 2.0) -> list[list[dict]]:
+        if not chars:
+            return []
+        lines: list[list[dict]] = []
+        current: list[dict] = [chars[0]]
+        current_top = chars[0]["top"]
+        for char in chars[1:]:
+            if abs(char["top"] - current_top) <= tolerance:
+                current.append(char)
+                continue
+            lines.append(current)
+            current = [char]
+            current_top = char["top"]
+        lines.append(current)
+        return lines
+
+    def _join_chars(self, chars: list[dict]) -> str:
+        if not chars:
+            return ""
+        parts = [chars[0]["text"]]
+        prev = chars[0]
+        for char in chars[1:]:
+            gap = char["x0"] - prev["x1"]
+            if (
+                gap > 1.4
+                and prev["text"] not in {"(", "/", "-"}
+                and char["text"] not in {".", ",", ";", ":", ")"}
+            ):
+                parts.append(" ")
+            parts.append(char["text"])
+            prev = char
+        return "".join(parts).strip()
+
+    def _build_cell_text(self, cell_chars: list[dict]) -> str:
+        lines = self._split_char_lines(
+            sorted(cell_chars, key=lambda c: (round(c["top"], 1), c["x0"]))
         )
-        if time_match:
-            clean_time = "%s-%s" % (
-                time_match.group(1),
-                time_match.group(2),
-            )
-        pair_num = TIME_TO_NUM.get(clean_time)
-        if pair_num is not None:
-            return pair_num, clean_time
-        return None, clean_time
+        return "\n".join(
+            self._join_chars(sorted(line, key=lambda c: c["x0"]))
+            for line in lines
+            if line
+        ).strip()
 
-    def _extract_raw_data(
-        self, target_group: str
-    ) -> tuple[dict, list[list[str]]]:
-        """Извлекает метаданные и сырые строки из PDF."""
-        metadata = {}
-        raw_rows = []
-        with pdfplumber.open(self.pdf_path) as pdf:
-            first_page_text = pdf.pages[0].extract_text()
-            if first_page_text:
-                date_match = re.search(
-                    r"(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})",
-                    first_page_text,
-                )
-                if date_match:
-                    metadata["period"] = date_match.group(0)
-            for page in pdf.pages:
-                for table in page.extract_tables():
-                    raw_rows.extend(
-                        self._filter_group_rows(table, target_group)
+    def _extract_subject_text(self, raw_text: str) -> str:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        first_line = lines[0]
+        if len(lines) == 1:
+            return first_line
+        second_line = lines[1]
+        if TEACHER_RE.search(" " + second_line):
+            return first_line
+        if re.search(r"[А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ]\.)", second_line):
+            return first_line
+        return f"{first_line} {second_line}".strip()
+
+    def _clean_subject_text(self, text: str) -> str:
+        if "УП.07" in text:
+            return "УП.07 Учебная практика"
+        if "ПП.07" in text:
+            return "ПП.07 Производственная практика"
+
+        text = text.replace("\u00a0", " ")
+        text = re.sub(r"(?<=[а-яё])(?=[А-ЯЁ])", " ", text)
+        text = re.sub(r"(?<=[А-ЯЁ]\.) (?=[А-ЯЁ]\.)", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        text = text.replace("прак тика", "практика")
+        text = text.replace("Произв.практ ика", "Произв.практика")
+        text = text.replace("Учебная прак тика", "Учебная практика")
+        text = text.replace("ухо ду", "уходу")
+        text = re.sub(r"^[а-яё](?=[А-ЯЁ])", "", text)
+        text = re.sub(r"^[а-яё]\s+", "", text)
+
+        text = re.sub(r"\bУП\s+\d+-\d+\b", "", text)
+        text = re.sub(r"\bПП\.07\s+\d+-\d+\b", "", text)
+        text = re.sub(r"\b\d+-\d+\b", "", text)
+        text = re.sub(r"\b(?:ЗаО|КЗаО|Защ\.?КП|пр\.)\b", "", text)
+        text = re.sub(r"(?<=[А-Яа-яЁё])\d\.\d{1,2}[А-Яа-яЁёA-Za-z]*", "", text)
+        text = re.sub(r"\b\d\.\d{1,2}[А-Яа-яЁёA-Za-z]*\b", "", text)
+        text = re.sub(r"\b\d-[А-Яа-яA-Za-z0-9]+еменский\b", "Кременский", text)
+
+        text = re.sub(r"\s+", " ", text).strip(" -/")
+        text = TEACHER_RE.sub("", text).strip()
+        text = re.sub(r"(УП\.07 Учебная практика)(?:\s+\1)+", r"\1", text)
+        text = re.sub(r"(ПП\.07 Производственная практика)(?:\s+\1)+", r"\1", text)
+
+        if text.islower() and len(text) <= 10:
+            return ""
+        if len(text) <= 2:
+            return ""
+
+        info = self.extractor.extract(text)
+        subject = (info.subject or text).strip()
+        subject = LEADING_TEACHER_RE.sub("", subject).strip()
+        subject = re.sub(r"\b(?:Т|Тж)\.?$", "", subject).strip()
+        subject = re.sub(r"\bЗа\s+О\b", "", subject).strip()
+
+        if subject.islower() and len(subject) <= 10:
+            return ""
+        if len(subject) <= 2:
+            return ""
+
+        return normalize_subject_alias(subject)
+
+    def _extract_room(self, raw_text: str) -> Optional[str]:
+        info = self.extractor.extract(raw_text.replace("\n", " "))
+        return info.room
+
+    def _find_target_region(self, page, group_name: str) -> tuple[float, float] | None:
+        words = page.extract_words(
+            x_tolerance=1,
+            y_tolerance=1,
+            use_text_flow=False,
+            keep_blank_chars=False,
+        )
+        left_labels = sorted(
+            [
+                word
+                for word in words
+                if word["x0"] < 110 and GROUP_RE.search(word.get("text", ""))
+            ],
+            key=lambda word: word["top"],
+        )
+        target_index = next(
+            (
+                index
+                for index, word in enumerate(left_labels)
+                if group_name.lower() in word.get("text", "").lower()
+            ),
+            None,
+        )
+        if target_index is None:
+            return None
+
+        target_hit = left_labels[target_index]
+        if target_index > 0:
+            prev_label = left_labels[target_index - 1]
+            row_top = (prev_label["bottom"] + target_hit["top"]) / 2
+        else:
+            row_top = max(target_hit["top"] - 40, 0)
+
+        if target_index + 1 < len(left_labels):
+            next_label = left_labels[target_index + 1]
+            row_bottom = (target_hit["bottom"] + next_label["top"]) / 2
+        else:
+            row_bottom = page.height
+        return row_top, row_bottom
+
+    def _collect_page_lessons(self, page, group_name: str) -> dict[str, list[Lesson]]:
+        region = self._find_target_region(page, group_name)
+        if region is None:
+            return {}
+
+        top, bottom = region
+        words = page.extract_words(
+            x_tolerance=1,
+            y_tolerance=1,
+            use_text_flow=False,
+            keep_blank_chars=False,
+        )
+        region_words = [word for word in words if top <= word["top"] < bottom]
+        region_chars = [char for char in page.chars if top <= char["top"] < bottom]
+
+        time_words = [
+            word
+            for word in region_words
+            if 138 <= word["x0"] <= 161 and TIME_RE.match(word["text"])
+        ]
+        time_words.sort(key=lambda word: word["top"])
+
+        result = {day: [] for day in DAY_NAMES}
+        for index, time_word in enumerate(time_words):
+            row_top = top if index == 0 else (time_words[index - 1]["top"] + time_word["top"]) / 2
+            row_bottom = (
+                bottom
+                if index + 1 == len(time_words)
+                else (time_word["top"] + time_words[index + 1]["top"]) / 2
+            )
+
+            pair_candidates = [
+                word
+                for word in region_words
+                if row_top <= word["top"] < row_bottom
+                and 114 <= word["x0"] <= 121
+                and word["text"].isdigit()
+            ]
+            if not pair_candidates:
+                continue
+            pair_word = min(
+                pair_candidates,
+                key=lambda word: abs(word["top"] - time_word["top"]),
+            )
+            pair_num = int(pair_word["text"])
+            clean_time = PAIR_TIMES.get(pair_num, time_word["text"].replace(".", ":"))
+
+            for day_name, (x0, x1) in zip(DAY_NAMES, DAY_X_RANGES):
+                cell_chars = [
+                    char
+                    for char in region_chars
+                    if row_top <= char["top"] < row_bottom
+                    and x0 <= (char["x0"] + char["x1"]) / 2 < x1
+                ]
+                raw = self._build_cell_text(cell_chars)
+                subject = self._clean_subject_text(self._extract_subject_text(raw))
+                if not subject:
+                    continue
+                result[day_name].append(
+                    Lesson(
+                        num=pair_num,
+                        time=clean_time,
+                        raw=raw,
+                        subject=subject,
+                        room=self._extract_room(raw),
                     )
-        return metadata, raw_rows
+                )
+        return result
 
     @staticmethod
-    def _filter_group_rows(
-        table: list, target_group: str
-    ) -> list[list[str]]:
-        """Фильтрует строки таблицы, относящиеся к целевой группе."""
-        rows = []
-        current_group = None
-        target_lower = target_group.lower()
-        for row in table:
-            clean_row = [
-                (cell.strip().replace("\n", " ") if cell else "")
-                for cell in row
-            ]
-            if all(c == "" for c in clean_row):
-                continue
-            if clean_row[COLUMN_GROUP]:
-                current_group = clean_row[COLUMN_GROUP]
-            if (
-                current_group
-                and target_lower in current_group.lower()
-            ):
-                rows.append(clean_row)
-        return rows
+    def _merge_lessons(target: dict[str, list[Lesson]], incoming: dict[str, list[Lesson]]) -> None:
+        for day_name, lessons in incoming.items():
+            seen = {
+                (item.num, item.subject, item.room or "")
+                for item in target[day_name]
+            }
+            for lesson in lessons:
+                key = (lesson.num, lesson.subject, lesson.room or "")
+                if key not in seen:
+                    target[day_name].append(lesson)
+                    seen.add(key)
 
-    def _resolve_pair_info(
-        self, row: list[str]
-    ) -> tuple[Optional[int], Optional[str]]:
-        """Определяет номер пары и время из строки."""
-        raw_time = (
-            row[COLUMN_TIME]
-            if len(row) > COLUMN_TIME
-            else ""
-        )
-        pair_num, clean_time = self._normalize_time(raw_time)
-        if pair_num is not None:
-            return pair_num, clean_time
-        raw_lesson_num = (
-            row[COLUMN_LESSON_NUM]
-            if len(row) > COLUMN_LESSON_NUM
-            else ""
-        )
-        if raw_lesson_num.isdigit():
-            n = int(raw_lesson_num)
-            pair_num = (n + 1) // 2
-            if not clean_time:
-                clean_time = PAIR_TIMES.get(pair_num, "??:??")
-            return pair_num, clean_time
-        return None, None
-
-    def _process_rows(
-        self, raw_rows: list[list[str]]
-    ) -> list[dict]:
-        """Обрабатывает сырые строки в структурированное расписание."""
-        days_schedule = {day: [] for _, day in DAY_COLUMNS}
-        for row in raw_rows:
-            pair_num, clean_time = self._resolve_pair_info(row)
-            if not pair_num:
-                continue
-            for col_idx, day_name in DAY_COLUMNS:
-                if col_idx >= len(row) or not row[col_idx]:
-                    continue
-                content = row[col_idx]
-                subject, room = self._extract_lesson_info(content)
-                if subject is None and room is None:
-                    continue
-                days_schedule[day_name].append(
-                    {
-                        "num": pair_num,
-                        "time": clean_time or "",
-                        "subject": subject or "",
-                        "room": room,
-                        "raw": content,
-                    }
-                )
-        for day in days_schedule:
-            days_schedule[day].sort(key=lambda x: x["num"])
-        return [
-            {"day": day_name, "lessons": days_schedule[day_name]}
-            for _, day_name in DAY_COLUMNS
-        ]
+    @staticmethod
+    def _detect_period(pdf) -> str:
+        first_page_text = pdf.pages[0].extract_text() or ""
+        match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}\.\d{2}\.\d{4})", first_page_text)
+        return match.group(0) if match else "Не найдено"
 
     def parse(self, target_group: str) -> Optional[dict]:
-        """Парсит PDF и возвращает расписание для группы."""
-        metadata, raw_rows = self._extract_raw_data(target_group)
-        if not raw_rows:
+        metadata: dict[str, str] = {}
+        days_schedule = {day: [] for day in DAY_NAMES}
+
+        with pdfplumber.open(self.pdf_path) as pdf:
+            metadata["period"] = self._detect_period(pdf)
+            hit = False
+            for page in pdf.pages:
+                lessons = self._collect_page_lessons(page, target_group)
+                if any(lessons.values()):
+                    hit = True
+                    self._merge_lessons(days_schedule, lessons)
+
+        if not hit:
             return None
-        schedule = self._process_rows(raw_rows)
+
+        schedule = []
+        for day_name in DAY_NAMES:
+            lessons = sorted(days_schedule[day_name], key=lambda lesson: lesson.num)
+            schedule.append(
+                {
+                    "day": day_name,
+                    "lessons": [
+                        {
+                            "num": lesson.num,
+                            "time": lesson.time,
+                            "subject": lesson.subject,
+                            "room": lesson.room,
+                            "raw": lesson.raw,
+                        }
+                        for lesson in lessons
+                    ],
+                }
+            )
+
         return {"metadata": metadata, "schedule": schedule}
