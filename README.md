@@ -293,8 +293,8 @@ python -m unittest discover -s tests -v
 
 Дополнительные документы:
 
-- [DEPLOY_DEBIAN11.md](/D:/GIT_HYPER/raspisanie_bot_ait/docs/DEPLOY_DEBIAN11.md)
-- [TEST_SCENARIOS.md](/D:/GIT_HYPER/raspisanie_bot_ait/docs/TEST_SCENARIOS.md)
+- [DEPLOY_DEBIAN11.md](docs/DEPLOY_DEBIAN11.md)
+- [TEST_SCENARIOS.md](docs/TEST_SCENARIOS.md)
 
 ## Ограничения
 
