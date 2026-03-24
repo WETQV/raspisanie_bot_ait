@@ -22,7 +22,11 @@
 
 ### Недельное обновление после парсинга нового PDF
 
-![week update](docs/SCREENSHOTS/02_week_update.png)
+<a href="docs/SCREENSHOTS/02_week_update.png">
+  <img src="docs/SCREENSHOTS/02_week_update.png" alt="week update" width="260">
+</a>
+
+Полный размер откроется по клику на превью.
 
 ### `/tomorrow` в личных сообщениях
 
