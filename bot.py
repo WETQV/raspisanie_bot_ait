@@ -139,12 +139,16 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
         text += f"📅 <b>{safe_day_name}</b> <i>({safe_date})</i>\n"
         text += "──────────\n"
 
+        day_lines: list[str] = []
         for lesson in lessons:
             subject = escape_html(lesson["subject"])
-            text += f"{lesson['num']}. <b>{lesson['time']}</b>"
+            line = f"{lesson['num']}. <b>{lesson['time']}</b>"
             if lesson["room"]:
-                text += f" • <code>{escape_html(lesson['room'])}</code>"
-            text += f"\n{subject}\n\n"
+                line += f" • <code>{escape_html(lesson['room'])}</code>"
+            line += f"\n{subject}"
+            day_lines.append(line)
+        text += "\n".join(day_lines)
+        text += "\n\n"
 
     text += "<i>Бот автоматически будет присылать расписание на следующий учебный день в 19:00.</i>"
     return text
