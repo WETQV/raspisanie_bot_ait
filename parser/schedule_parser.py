@@ -237,7 +237,7 @@ class ScheduleParser:
         time_words = [
             word
             for word in region_words
-            if 138 <= word["x0"] <= 161 and TIME_RE.match(word["text"])
+            if 126 <= word["x0"] <= 165 and TIME_RE.match(word["text"])
         ]
         time_words.sort(key=lambda word: word["top"])
 
@@ -254,8 +254,9 @@ class ScheduleParser:
                 word
                 for word in region_words
                 if row_top <= word["top"] < row_bottom
-                and 114 <= word["x0"] <= 121
+                and 104 <= word["x0"] <= 112
                 and word["text"].isdigit()
+                and int(word["text"]) in range(1, 7)
             ]
             if not pair_candidates:
                 continue

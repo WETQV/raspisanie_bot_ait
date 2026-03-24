@@ -125,7 +125,8 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
     """Format a whole week schedule as HTML-safe Telegram text."""
     safe_period = escape_html(period)
     text = "🆕 <b>РАСПИСАНИЕ НА НЕДЕЛЮ</b>\n"
-    text += f"🗓 <b>Период:</b> {safe_period}\n\n"
+    text += f"🗓 <b>Период:</b> {safe_period}\n"
+    text += "══════════\n\n"
 
     for day in schedule_data:
         day_name = day["day"]
@@ -135,15 +136,15 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
 
         safe_day_name = escape_html(day_name)
         safe_date = escape_html(get_date_from_period(period, day_name))
-        text += f"🔹 <b>{safe_day_name}</b> ({safe_date})\n"
+        text += f"📅 <b>{safe_day_name}</b> <i>({safe_date})</i>\n"
+        text += "──────────\n"
 
         for lesson in lessons:
             subject = escape_html(lesson["subject"])
-            text += f"   {lesson['num']}. {subject}"
+            text += f"{lesson['num']}. <b>{lesson['time']}</b>"
             if lesson["room"]:
-                text += f" ({escape_html(lesson['room'])})"
-            text += "\n"
-        text += "\n"
+                text += f" • <code>{escape_html(lesson['room'])}</code>"
+            text += f"\n{subject}\n\n"
 
     text += "<i>Бот автоматически будет присылать расписание на следующий учебный день в 19:00.</i>"
     return text
@@ -258,6 +259,38 @@ async def cmd_update(message: types.Message):
         await status_msg.edit_text("❌ Ошибка.")
 
 
+@dp.message(Command("reparse"))
+async def cmd_reparse(message: types.Message):
+    if not is_admin_message(message):
+        await message.answer("🚫 Команда /reparse доступна только администраторам.")
+        return
+
+    remaining = await check_manual_update_throttle()
+    if remaining:
+        await message.answer(
+            f"⏳ Перепарс уже запускали недавно. Попробуй снова через {remaining} сек."
+        )
+        return
+
+    await set_metadata("last_manual_update_at", now_moscow().isoformat())
+    status_msg = await message.answer("⏳ Принудительно перепарсиваю текущий файл...")
+
+    try:
+        period, schedule, _ = await check_and_update_schedule(
+            notify_users=False,
+            reason="manual_reparse",
+            force=True,
+        )
+        if period and schedule:
+            await status_msg.edit_text("✅ <b>Перепарс выполнен.</b>")
+            await message.answer(format_week_schedule(period, schedule))
+        else:
+            await status_msg.edit_text("❌ Не удалось перепарсить файл.")
+    except Exception as exc:
+        logger.exception("Manual reparse error: %s", exc)
+        await status_msg.edit_text("❌ Ошибка перепарса.")
+
+
 async def broadcast_message(text: str, document_path: str | None = None) -> int:
     return await schedule_service.broadcast_message(text, document_path)
 
@@ -265,10 +298,12 @@ async def broadcast_message(text: str, document_path: str | None = None) -> int:
 async def check_and_update_schedule(
     notify_users: bool = True,
     reason: str = "scheduled",
+    force: bool = False,
 ) -> tuple[Optional[str], Optional[list], bool]:
     return await schedule_updater.check_and_update(
         notify_users=notify_users,
         reason=reason,
+        force=force,
     )
 
 
@@ -316,7 +351,7 @@ async def safe_daily_mailing() -> None:
         )
 
 
-async def on_startup(_bot: Bot) -> None:
+async def on_startup(_bot: Bot | None = None) -> None:
     await startup_recovery()
 
 
@@ -341,7 +376,7 @@ async def startup_recovery() -> None:
         await daily_evening_mailing()
 
 
-async def on_shutdown(_bot: Bot) -> None:
+async def on_shutdown(_bot: Bot | None = None) -> None:
     scheduler.shutdown(wait=True)
     await db.close()
     logger.info("Bot stopped cleanly")
@@ -366,4 +401,5 @@ async def main() -> None:
     )
 
     scheduler.start()
+    await bot_instance.delete_webhook(drop_pending_updates=True)
     await dispatcher.start_polling(bot_instance)

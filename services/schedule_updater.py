@@ -143,6 +143,7 @@ class ScheduleUpdater:
         *,
         notify_users: bool = True,
         reason: str = "scheduled",
+        force: bool = False,
     ) -> tuple[str | None, list | None, bool]:
         logger.info("Checking schedule (reason: %s)", reason)
         scraper = ScheduleScraper()
@@ -173,9 +174,12 @@ class ScheduleUpdater:
             return None, None, False
 
         last_hash = await self.db.get_metadata("last_file_hash")
-        if new_hash == last_hash:
+        if not force and new_hash == last_hash:
             logger.info("Schedule file hash unchanged")
             return None, None, False
 
-        logger.info("New schedule detected: %s", file_path)
+        if force:
+            logger.info("Force reparsing schedule file: %s", file_path)
+        else:
+            logger.info("New schedule detected: %s", file_path)
         return await self._parse_and_save(file_path, new_hash, notify_users)
