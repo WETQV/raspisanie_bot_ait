@@ -18,15 +18,15 @@
 
 ### `/today` в личных сообщениях
 
-![today](D:/GIT_HYPER/raspisanie_bot_ait/docs/SCREENSHOTS/01_today_dm.png)
+![today](docs/SCREENSHOTS/01_today_dm.png)
 
 ### Недельное обновление после парсинга нового PDF
 
-![week update](D:/GIT_HYPER/raspisanie_bot_ait/docs/SCREENSHOTS/02_week_update.png)
+![week update](docs/SCREENSHOTS/02_week_update.png)
 
 ### `/tomorrow` в личных сообщениях
 
-![tomorrow](D:/GIT_HYPER/raspisanie_bot_ait/docs/SCREENSHOTS/04_tomorrow_dm.png)
+![tomorrow](docs/SCREENSHOTS/04_tomorrow_dm.png)
 
 ## Структура проекта
 
@@ -181,7 +181,7 @@ raspisanie_bot_ait/
 ```env
 BOT_TOKEN=ваш_токен_от_BotFather
 GROUP_NAME=ИСП-3-22
-ADMIN_IDS=735412766,123456789
+ADMIN_IDS=Ваш ID телеграм акка (типа 123456789)
 ```
 
 ### Примечания
