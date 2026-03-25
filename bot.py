@@ -126,7 +126,7 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
     safe_period = escape_html(period)
     text = "🆕 <b>РАСПИСАНИЕ НА НЕДЕЛЮ</b>\n"
     text += f"🗓 <b>Период:</b> {safe_period}\n"
-    text += "══════════\n\n"
+    text += "\n"
 
     for day in schedule_data:
         day_name = day["day"]
@@ -136,19 +136,16 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
 
         safe_day_name = escape_html(day_name)
         safe_date = escape_html(get_date_from_period(period, day_name))
-        text += f"📅 <b>{safe_day_name}</b> <i>({safe_date})</i>\n"
-        text += "──────────\n"
+        text += f"🔹 <b>{safe_day_name}</b> <i>({safe_date})</i>\n"
 
-        day_lines: list[str] = []
         for lesson in lessons:
             subject = escape_html(lesson["subject"])
-            line = f"{lesson['num']}. <b>{lesson['time']}</b>"
+            line = f"   {lesson['num']}. {subject}"
             if lesson["room"]:
-                line += f" • <code>{escape_html(lesson['room'])}</code>"
-            line += f"\n{subject}"
-            day_lines.append(line)
-        text += "\n".join(day_lines)
-        text += "\n\n"
+                line += f" (<code>{escape_html(lesson['room'])}</code>)"
+            text += line + "\n"
+
+        text += "\n"
 
     text += "<i>Бот автоматически будет присылать расписание на следующий учебный день в 19:00.</i>"
     return text
@@ -319,7 +316,7 @@ async def daily_evening_mailing() -> None:
 
     day_name, period, lessons = await get_schedule_for_target_date(target_date)
     if period:
-        message_text = "🌙 <b>Расписание на следующий учебный день:</b>\n\n"
+        message_text = "🌙 <b>Расписание на завтра:</b>\n\n"
         message_text += format_schedule_message(day_name, period, lessons)
         await broadcast_message(message_text)
         await set_metadata("last_daily_sent_date", target_date.isoformat())
