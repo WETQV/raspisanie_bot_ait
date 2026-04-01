@@ -11,6 +11,7 @@ os.environ.setdefault("ADMIN_IDS", "111,222")
 
 from bot import format_schedule_message, get_next_study_date, is_admin_message
 from database import Database
+from parser.schedule_parser import ScheduleParser
 from scraper.schedule_scraper import _resolve_download_target
 from services.schedule_service import ScheduleService
 
@@ -23,9 +24,27 @@ class FakeBot:
         self.calls.append(
             ("document", chat_id, caption, message_thread_id, type(document).__name__)
         )
+        return SimpleNamespace(message_id=777)
 
     async def send_message(self, chat_id, text, message_thread_id=None):
         self.calls.append(("message", chat_id, text, message_thread_id))
+
+    async def pin_chat_message(self, chat_id, message_id, disable_notification=None):
+        self.calls.append(("pin", chat_id, message_id, disable_notification))
+
+    async def unpin_chat_message(self, chat_id, message_id=None):
+        self.calls.append(("unpin", chat_id, message_id))
+
+
+class FakeMetadataDb:
+    def __init__(self):
+        self.storage = {}
+
+    async def get_metadata(self, key):
+        return self.storage.get(key)
+
+    async def set_metadata(self, key, value):
+        self.storage[key] = value
 
 
 class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
@@ -88,6 +107,7 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Программирование &lt;script&gt;", text)
         self.assertIn("2&lt;10&gt;", text)
+        self.assertIn("➖➖➖➖➖➖➖➖➖➖", text)
 
     def test_next_study_date_skips_sunday(self):
         self.assertEqual(get_next_study_date(date(2026, 3, 14)), date(2026, 3, 16))
@@ -98,9 +118,23 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_admin_message(admin_message))
         self.assertFalse(is_admin_message(user_message))
 
+    def test_schedule_parser_shifts_day_columns_for_moved_layout(self):
+        parser = ScheduleParser("dummy.pdf")
+        region_words = [
+            {"x0": 65.4, "text": "ИСП-3-22"},
+            {"x0": 103.2, "text": "4"},
+            {"x0": 125.7, "text": "12.40-14.00"},
+            {"x0": 151.5, "text": "ПП.07"},
+        ]
+
+        day_ranges = parser._resolve_day_x_ranges(region_words)
+
+        self.assertAlmostEqual(day_ranges[0][0], 151.5)
+        self.assertAlmostEqual(day_ranges[1][0], 211.5, places=1)
+
     async def test_schedule_service_sends_document_and_message_separately(self):
         fake_bot = FakeBot()
-        fake_db = SimpleNamespace(get_chats=None)
+        fake_db = FakeMetadataDb()
         fake_config = SimpleNamespace(admin_ids=[])
         service = ScheduleService(fake_bot, fake_config, fake_db)
 
@@ -117,6 +151,52 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake_bot.calls[0][2], "📎 Актуальный PDF расписания")
         self.assertEqual(fake_bot.calls[1][0], "message")
         self.assertEqual(fake_bot.calls[1][2], "Weekly text")
+
+    async def test_schedule_service_pins_latest_document_in_group(self):
+        fake_bot = FakeBot()
+        fake_db = FakeMetadataDb()
+        fake_config = SimpleNamespace(admin_ids=[])
+        service = ScheduleService(fake_bot, fake_config, fake_db)
+        fake_db.storage[service._pin_metadata_key(-100123, None)] = "555"
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_file:
+            temp_file.write(b"%PDF-1.4\n")
+            temp_path = temp_file.name
+
+        try:
+            await service._send_to_chat(
+                -100123,
+                None,
+                "Weekly text",
+                temp_path,
+                document_caption="📎 PDF расписания за период: 30.03.2026-04.04.2026",
+                pin_document=True,
+            )
+        finally:
+            os.unlink(temp_path)
+
+        self.assertIn(("unpin", -100123, 555), fake_bot.calls)
+        self.assertIn(("pin", -100123, 777, True), fake_bot.calls)
+        self.assertEqual(
+            fake_db.storage[service._pin_metadata_key(-100123, None)],
+            "777",
+        )
+
+    async def test_database_returns_week_schedule(self):
+        db = Database(":memory:")
+        await db.connect()
+        schedule = [
+            {"day": "ПОНЕДЕЛЬНИК", "lessons": [{"num": 1, "time": "08:00-09:20", "subject": "Информатика", "room": "3.05"}]},
+            {"day": "ВТОРНИК", "lessons": [{"num": 2, "time": "09:30-10:50", "subject": "Математика", "room": "2.10"}]},
+        ]
+
+        await db.save_schedule("ИСП-3-22", "17.03.2026-23.03.2026", schedule)
+        week = await db.get_schedule_for_week("ИСП-3-22", "17.03.2026-23.03.2026")
+
+        self.assertEqual(week[0]["day"], "ПОНЕДЕЛЬНИК")
+        self.assertEqual(week[0]["lessons"][0]["subject"], "Информатика")
+        self.assertEqual(week[1]["lessons"][0]["time"], "09:30-10:50")
+        await db.close()
 
 
 if __name__ == "__main__":

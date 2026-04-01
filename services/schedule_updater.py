@@ -52,11 +52,13 @@ class ScheduleUpdater:
         db: Any,
         service: Any,
         format_week_schedule: Callable[[str, list], str] | None = None,
+        format_document_caption: Callable[[str], str] | None = None,
     ):
         self.config = config
         self.db = db
         self.service = service
         self.format_week_schedule = format_week_schedule
+        self.format_document_caption = format_document_caption
 
     def filter_links(self, links: list[dict]) -> list[dict]:
         candidates = []
@@ -133,7 +135,14 @@ class ScheduleUpdater:
             last_sent = await self.db.get_metadata("last_weekly_sent_period")
             if last_sent != period:
                 message_text = self.format_week_schedule(period, schedule)
-                await self.service.broadcast_message(message_text, document_path=file_path)
+                await self.service.broadcast_message(
+                    message_text,
+                    document_path=file_path,
+                    document_caption=self.format_document_caption(period)
+                    if self.format_document_caption
+                    else None,
+                    pin_document=True,
+                )
                 await self.db.set_metadata("last_weekly_sent_period", period)
 
         return period, schedule, True

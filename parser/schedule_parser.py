@@ -28,6 +28,10 @@ DAY_X_RANGES = [
     (404.2, 464.3),
     (464.4, 532.2),
 ]
+TIME_X_RANGE = (120.0, 170.0)
+PAIR_X_RANGE = (100.0, 120.0)
+DAY_CONTENT_MIN_X0 = 140.0
+MAX_DAY_SHIFT = 20.0
 
 PAIR_TIMES = {
     1: "08:00-09:20",
@@ -179,6 +183,25 @@ class ScheduleParser:
         info = self.extractor.extract(raw_text.replace("\n", " "))
         return info.room
 
+    def _resolve_day_x_ranges(self, region_words: list[dict]) -> list[tuple[float, float]]:
+        """Shift day columns when the PDF layout moved horizontally."""
+        content_left_edges = [
+            word["x0"]
+            for word in region_words
+            if word["x0"] >= DAY_CONTENT_MIN_X0
+            and not TIME_RE.match(word.get("text", ""))
+            and not word.get("text", "").isdigit()
+            and not GROUP_RE.search(word.get("text", ""))
+        ]
+        if not content_left_edges:
+            return DAY_X_RANGES
+
+        shift = min(content_left_edges) - DAY_X_RANGES[0][0]
+        if abs(shift) < 0.5 or abs(shift) > MAX_DAY_SHIFT:
+            return DAY_X_RANGES
+
+        return [(x0 + shift, x1 + shift) for x0, x1 in DAY_X_RANGES]
+
     def _find_target_region(self, page, group_name: str) -> tuple[float, float] | None:
         words = page.extract_words(
             x_tolerance=1,
@@ -233,11 +256,13 @@ class ScheduleParser:
         )
         region_words = [word for word in words if top <= word["top"] < bottom]
         region_chars = [char for char in page.chars if top <= char["top"] < bottom]
+        day_x_ranges = self._resolve_day_x_ranges(region_words)
 
         time_words = [
             word
             for word in region_words
-            if 126 <= word["x0"] <= 165 and TIME_RE.match(word["text"])
+            if TIME_X_RANGE[0] <= word["x0"] <= TIME_X_RANGE[1]
+            and TIME_RE.match(word["text"])
         ]
         time_words.sort(key=lambda word: word["top"])
 
@@ -254,7 +279,7 @@ class ScheduleParser:
                 word
                 for word in region_words
                 if row_top <= word["top"] < row_bottom
-                and 104 <= word["x0"] <= 112
+                and PAIR_X_RANGE[0] <= word["x0"] <= PAIR_X_RANGE[1]
                 and word["text"].isdigit()
                 and int(word["text"]) in range(1, 7)
             ]
@@ -267,7 +292,7 @@ class ScheduleParser:
             pair_num = int(pair_word["text"])
             clean_time = PAIR_TIMES.get(pair_num, time_word["text"].replace(".", ":"))
 
-            for day_name, (x0, x1) in zip(DAY_NAMES, DAY_X_RANGES):
+            for day_name, (x0, x1) in zip(DAY_NAMES, day_x_ranges):
                 cell_chars = [
                     char
                     for char in region_chars

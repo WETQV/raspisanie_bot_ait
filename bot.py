@@ -2,6 +2,7 @@
 import html
 import logging
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -12,7 +13,7 @@ from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import Config
-from database import add_chat, db, get_metadata, get_schedule_for_day, init_db, set_metadata
+from database import add_chat, db, get_metadata, get_schedule_for_day, get_schedule_for_week, init_db, set_metadata
 from middleware.access_middleware import AccessMiddleware
 from services.schedule_service import ScheduleService
 from services.schedule_updater import ScheduleUpdater
@@ -26,6 +27,10 @@ CHECK_INTERVAL_HOURS = 1
 DAILY_MAILING_HOUR = 19
 DAILY_MAILING_MINUTE = 0
 MANUAL_UPDATE_THROTTLE_SECONDS = 120
+WEEKLY_PREVIEW_HOUR = 19
+WEEKLY_PREVIEW_MINUTE = 5
+MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖"
+CURRENT_SCHEDULE_PDF = Path(__file__).resolve().parent / "downloads" / "raspisanie_po_gruppam.pdf"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -93,7 +98,7 @@ def format_schedule_message(day_name: str, period: str, lessons: list[tuple]) ->
     text = f"📅 <b>{safe_day_name}</b>"
     if safe_date:
         text += f" <i>({safe_date})</i>"
-    text += "\n──────────\n"
+    text += f"\n{MESSAGE_SEPARATOR}\n"
 
     if not lessons:
         return text + "🎉 <b>Пар нет!</b> <i>Можно отдыхать.</i>\n"
@@ -151,11 +156,16 @@ def format_week_schedule(period: str, schedule_data: list[dict]) -> str:
     return text
 
 
+def build_schedule_pdf_caption(period: str) -> str:
+    return f"📎 PDF расписания за период: {escape_html(period)}"
+
+
 schedule_updater = ScheduleUpdater(
     config,
     db,
     schedule_service,
     format_week_schedule=format_week_schedule,
+    format_document_caption=build_schedule_pdf_caption,
 )
 
 
@@ -167,6 +177,10 @@ async def get_schedule_for_target_date(target_date: date) -> tuple[str, Optional
         target_date=target_date,
     )
     return day_name, period, lessons
+
+
+async def get_schedule_for_period(period: str) -> list[dict]:
+    return await get_schedule_for_week(config.group_name, period)
 
 
 async def check_manual_update_throttle() -> int:
@@ -328,6 +342,42 @@ async def daily_evening_mailing() -> None:
         )
 
 
+async def weekly_preview_mailing() -> None:
+    target_date = get_next_study_date(now_moscow().date())
+    day_name, period, monday_lessons = await get_schedule_for_target_date(target_date)
+    if not period or not monday_lessons:
+        await notify_admins(
+            "⚠️ Не удалось собрать воскресную недельную рассылку.",
+            "weekly_preview_missing",
+            180,
+        )
+        return
+
+    weekly_schedule = await get_schedule_for_period(period)
+    if not any(day["lessons"] for day in weekly_schedule):
+        await notify_admins(
+            "⚠️ В БД нет недельного расписания для воскресной рассылки.",
+            "weekly_preview_empty",
+            180,
+        )
+        return
+
+    last_sent = await get_metadata("last_sunday_weekly_sent_period")
+    if last_sent == period:
+        return
+
+    message_text = "🗓 <b>РАСПИСАНИЕ НА НОВУЮ НЕДЕЛЮ</b>\n\n"
+    message_text += format_week_schedule(period, weekly_schedule)
+    document_path = str(CURRENT_SCHEDULE_PDF) if CURRENT_SCHEDULE_PDF.exists() else None
+    await schedule_service.broadcast_message(
+        message_text,
+        document_path=document_path,
+        document_caption=build_schedule_pdf_caption(period),
+        pin_document=bool(document_path),
+    )
+    await set_metadata("last_sunday_weekly_sent_period", period)
+
+
 async def safe_check_schedule() -> None:
     try:
         await check_and_update_schedule(notify_users=True, reason="scheduled")
@@ -348,6 +398,18 @@ async def safe_daily_mailing() -> None:
         await notify_admins(
             "❌ Ошибка вечерней рассылки.",
             "daily_error",
+            60,
+        )
+
+
+async def safe_weekly_preview_mailing() -> None:
+    try:
+        await weekly_preview_mailing()
+    except Exception as exc:
+        logger.exception("Weekly preview mailing error: %s", exc)
+        await notify_admins(
+            "❌ Ошибка воскресной недельной рассылки.",
+            "weekly_preview_error",
             60,
         )
 
@@ -376,6 +438,9 @@ async def startup_recovery() -> None:
     if last_sent != target_date.isoformat():
         await daily_evening_mailing()
 
+    if now_moscow().weekday() == 6 and now_moscow().hour >= WEEKLY_PREVIEW_HOUR:
+        await weekly_preview_mailing()
+
 
 async def on_shutdown(_bot: Bot | None = None) -> None:
     scheduler.shutdown(wait=True)
@@ -399,6 +464,13 @@ async def main() -> None:
         "cron",
         hour=DAILY_MAILING_HOUR,
         minute=DAILY_MAILING_MINUTE,
+    )
+    scheduler.add_job(
+        safe_weekly_preview_mailing,
+        "cron",
+        day_of_week="sun",
+        hour=WEEKLY_PREVIEW_HOUR,
+        minute=WEEKLY_PREVIEW_MINUTE,
     )
 
     scheduler.start()

@@ -32,19 +32,35 @@ class ScheduleService:
         self,
         text: str,
         document_path: str | None = None,
+        document_caption: str | None = None,
+        pin_document: bool = False,
     ) -> int:
         chats = await self.db.get_chats()
         count = 0
 
         for chat_id, thread_id in chats:
             try:
-                await self._send_to_chat(chat_id, thread_id, text, document_path)
+                await self._send_to_chat(
+                    chat_id,
+                    thread_id,
+                    text,
+                    document_path,
+                    document_caption=document_caption,
+                    pin_document=pin_document,
+                )
                 count += 1
             except TelegramRetryAfter as exc:
                 logger.warning("Rate limit hit, waiting %s sec", exc.retry_after)
                 await asyncio.sleep(exc.retry_after)
                 try:
-                    await self._send_to_chat(chat_id, thread_id, text, document_path)
+                    await self._send_to_chat(
+                        chat_id,
+                        thread_id,
+                        text,
+                        document_path,
+                        document_caption=document_caption,
+                        pin_document=pin_document,
+                    )
                     count += 1
                 except Exception:
                     logger.exception("Repeated send error for chat %s", chat_id)
@@ -70,20 +86,55 @@ class ScheduleService:
         thread_id: int | None,
         text: str,
         document_path: str | None,
+        *,
+        document_caption: str | None = None,
+        pin_document: bool = False,
     ) -> None:
+        document_message = None
         if document_path and os.path.exists(document_path):
-            await self.bot.send_document(
+            document_message = await self.bot.send_document(
                 chat_id,
                 FSInputFile(document_path),
-                caption="📎 Актуальный PDF расписания",
+                caption=document_caption or "📎 Актуальный PDF расписания",
                 message_thread_id=thread_id,
             )
+            if pin_document and chat_id < 0:
+                await self._pin_schedule_message(chat_id, document_message.message_id, thread_id)
 
         await self.bot.send_message(
             chat_id,
             text,
             message_thread_id=thread_id,
         )
+
+    @staticmethod
+    def _pin_metadata_key(chat_id: int, thread_id: int | None) -> str:
+        return f"pinned_schedule_message:{chat_id}:{thread_id or 0}"
+
+    async def _pin_schedule_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        thread_id: int | None,
+    ) -> None:
+        key = self._pin_metadata_key(chat_id, thread_id)
+        previous = await self.db.get_metadata(key)
+
+        if previous and previous.isdigit() and int(previous) != message_id:
+            try:
+                await self.bot.unpin_chat_message(chat_id, message_id=int(previous))
+            except (TelegramBadRequest, TelegramForbiddenError) as exc:
+                logger.warning("Cannot unpin old schedule message in chat %s: %s", chat_id, exc)
+
+        try:
+            await self.bot.pin_chat_message(
+                chat_id,
+                message_id=message_id,
+                disable_notification=True,
+            )
+            await self.db.set_metadata(key, str(message_id))
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            logger.warning("Cannot pin schedule message in chat %s: %s", chat_id, exc)
 
     @staticmethod
     async def _can_notify(

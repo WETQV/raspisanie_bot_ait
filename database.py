@@ -250,6 +250,53 @@ class Database:
             ]
             return week_period, result
 
+    async def get_schedule_for_week(
+        self,
+        group_name: str,
+        week_period: str,
+    ) -> list[dict]:
+        async with self.conn.execute(
+            """
+            SELECT day_name, lesson_num, time_start, time_end, subject, room
+            FROM schedule
+            WHERE group_name = ? AND week_period = ?
+            ORDER BY
+                CASE day_name
+                    WHEN 'ПОНЕДЕЛЬНИК' THEN 1
+                    WHEN 'ВТОРНИК' THEN 2
+                    WHEN 'СРЕДА' THEN 3
+                    WHEN 'ЧЕТВЕРГ' THEN 4
+                    WHEN 'ПЯТНИЦА' THEN 5
+                    WHEN 'СУББОТА' THEN 6
+                    ELSE 7
+                END,
+                lesson_num
+            """,
+            (group_name, week_period),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(row[0], []).append(
+                {
+                    "num": row[1],
+                    "time": f"{row[2]}-{row[3]}",
+                    "subject": row[4],
+                    "room": row[5] or "",
+                }
+            )
+
+        ordered_days = [
+            "ПОНЕДЕЛЬНИК",
+            "ВТОРНИК",
+            "СРЕДА",
+            "ЧЕТВЕРГ",
+            "ПЯТНИЦА",
+            "СУББОТА",
+        ]
+        return [{"day": day_name, "lessons": grouped.get(day_name, [])} for day_name in ordered_days]
+
     async def get_metadata(self, key: str) -> Optional[str]:
         async with self.conn.execute(
             "SELECT value FROM metadata WHERE key = ?",
@@ -313,6 +360,10 @@ async def get_schedule_for_day(
         week_period,
         target_date,
     )
+
+
+async def get_schedule_for_week(group_name: str, week_period: str) -> list[dict]:
+    return await db.get_schedule_for_week(group_name, week_period)
 
 
 async def get_metadata(key: str) -> Optional[str]:
