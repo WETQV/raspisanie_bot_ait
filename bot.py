@@ -26,11 +26,12 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_HOURS = 1
 DAILY_MAILING_HOUR = 19
 DAILY_MAILING_MINUTE = 0
+WEEKLY_PREVIEW_HOUR = 13
+WEEKLY_PREVIEW_MINUTE = 0
 MANUAL_UPDATE_THROTTLE_SECONDS = 120
-WEEKLY_PREVIEW_HOUR = 19
-WEEKLY_PREVIEW_MINUTE = 5
 MESSAGE_SEPARATOR = "➖➖➖➖➖➖➖➖➖➖"
 CURRENT_SCHEDULE_PDF = Path(__file__).resolve().parent / "downloads" / "raspisanie_po_gruppam.pdf"
+PRE_MONDAY_WEEKLY_SENT_KEY = "last_pre_monday_weekly_sent_period"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -87,6 +88,14 @@ def get_next_study_date(base_date: date) -> date:
     while target_date.weekday() == 6:
         target_date += timedelta(days=1)
     return target_date
+
+
+def should_send_weekly_preview(target_date: date) -> bool:
+    return target_date.weekday() == 0
+
+
+def should_skip_daily_evening_mailing(base_date: date) -> bool:
+    return base_date.weekday() == 5
 
 
 def format_schedule_message(day_name: str, period: str, lessons: list[tuple]) -> str:
@@ -323,7 +332,11 @@ async def check_and_update_schedule(
 
 
 async def daily_evening_mailing() -> None:
-    target_date = get_next_study_date(now_moscow().date())
+    base_date = now_moscow().date()
+    if should_skip_daily_evening_mailing(base_date):
+        return
+
+    target_date = get_next_study_date(base_date)
     last_sent = await get_metadata("last_daily_sent_date")
     if last_sent == target_date.isoformat():
         return
@@ -342,8 +355,8 @@ async def daily_evening_mailing() -> None:
         )
 
 
-async def weekly_preview_mailing() -> None:
-    target_date = get_next_study_date(now_moscow().date())
+async def weekly_preview_mailing(target_date: date | None = None) -> None:
+    target_date = target_date or get_next_study_date(now_moscow().date())
     day_name, period, monday_lessons = await get_schedule_for_target_date(target_date)
     if not period or not monday_lessons:
         await notify_admins(
@@ -362,7 +375,7 @@ async def weekly_preview_mailing() -> None:
         )
         return
 
-    last_sent = await get_metadata("last_sunday_weekly_sent_period")
+    last_sent = await get_metadata(PRE_MONDAY_WEEKLY_SENT_KEY)
     if last_sent == period:
         return
 
@@ -375,7 +388,7 @@ async def weekly_preview_mailing() -> None:
         document_caption=build_schedule_pdf_caption(period),
         pin_document=bool(document_path),
     )
-    await set_metadata("last_sunday_weekly_sent_period", period)
+    await set_metadata(PRE_MONDAY_WEEKLY_SENT_KEY, period)
 
 
 async def safe_check_schedule() -> None:
@@ -408,7 +421,7 @@ async def safe_weekly_preview_mailing() -> None:
     except Exception as exc:
         logger.exception("Weekly preview mailing error: %s", exc)
         await notify_admins(
-            "❌ Ошибка воскресной недельной рассылки.",
+            "❌ Ошибка недельной рассылки перед понедельником.",
             "weekly_preview_error",
             60,
         )
@@ -430,16 +443,18 @@ async def startup_recovery() -> None:
         )
         return
 
-    if now_moscow().hour < DAILY_MAILING_HOUR:
+    now = now_moscow()
+
+    if now.weekday() == 6 and now.hour >= WEEKLY_PREVIEW_HOUR:
+        await weekly_preview_mailing()
+
+    if now.hour < DAILY_MAILING_HOUR:
         return
 
-    target_date = get_next_study_date(now_moscow().date())
+    target_date = get_next_study_date(now.date())
     last_sent = await get_metadata("last_daily_sent_date")
     if last_sent != target_date.isoformat():
         await daily_evening_mailing()
-
-    if now_moscow().weekday() == 6 and now_moscow().hour >= WEEKLY_PREVIEW_HOUR:
-        await weekly_preview_mailing()
 
 
 async def on_shutdown(_bot: Bot | None = None) -> None:

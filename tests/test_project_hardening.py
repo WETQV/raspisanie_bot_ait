@@ -4,12 +4,20 @@ import unittest
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("BOT_TOKEN", "123456:TESTTOKEN")
 os.environ.setdefault("GROUP_NAME", "ИСП-3-22")
 os.environ.setdefault("ADMIN_IDS", "111,222")
 
-from bot import format_schedule_message, get_next_study_date, is_admin_message
+import bot
+from bot import (
+    format_schedule_message,
+    get_next_study_date,
+    is_admin_message,
+    should_send_weekly_preview,
+    should_skip_daily_evening_mailing,
+)
 from database import Database
 from parser.schedule_parser import ScheduleParser
 from scraper.schedule_scraper import _resolve_download_target
@@ -112,6 +120,14 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
     def test_next_study_date_skips_sunday(self):
         self.assertEqual(get_next_study_date(date(2026, 3, 14)), date(2026, 3, 16))
 
+    def test_should_send_weekly_preview_only_before_monday(self):
+        self.assertTrue(should_send_weekly_preview(date(2026, 3, 16)))
+        self.assertFalse(should_send_weekly_preview(date(2026, 3, 17)))
+
+    def test_should_skip_daily_evening_mailing_on_saturday_only(self):
+        self.assertTrue(should_skip_daily_evening_mailing(date(2026, 3, 14)))
+        self.assertFalse(should_skip_daily_evening_mailing(date(2026, 3, 15)))
+
     def test_manual_update_admin_check(self):
         admin_message = SimpleNamespace(from_user=SimpleNamespace(id=111))
         user_message = SimpleNamespace(from_user=SimpleNamespace(id=333))
@@ -197,6 +213,52 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(week[0]["lessons"][0]["subject"], "Информатика")
         self.assertEqual(week[1]["lessons"][0]["time"], "09:30-10:50")
         await db.close()
+
+    async def test_daily_evening_mailing_skips_saturday(self):
+        fake_now = bot.datetime(2026, 3, 14, 19, 0, tzinfo=bot.MOSCOW_TZ)
+
+        with patch.object(bot, "now_moscow", return_value=fake_now):
+            with patch.object(bot, "get_metadata", new=AsyncMock()) as get_meta_mock:
+                with patch.object(bot, "broadcast_message", new=AsyncMock()) as broadcast_mock:
+                    with patch.object(bot, "set_metadata", new=AsyncMock()) as set_meta_mock:
+                        await bot.daily_evening_mailing()
+
+        get_meta_mock.assert_not_called()
+        broadcast_mock.assert_not_called()
+        set_meta_mock.assert_not_called()
+
+    async def test_daily_evening_mailing_sends_monday_message_on_sunday(self):
+        fake_now = bot.datetime(2026, 3, 15, 19, 0, tzinfo=bot.MOSCOW_TZ)
+
+        with patch.object(bot, "now_moscow", return_value=fake_now):
+            with patch.object(bot, "get_metadata", new=AsyncMock(return_value=None)):
+                with patch.object(
+                    bot,
+                    "get_schedule_for_target_date",
+                    new=AsyncMock(return_value=("ПОНЕДЕЛЬНИК", "16.03.2026-21.03.2026", [(1, "08:00", "09:20", "Информатика", "")])),
+                ):
+                    with patch.object(bot, "broadcast_message", new=AsyncMock()) as broadcast_mock:
+                        with patch.object(bot, "set_metadata", new=AsyncMock()) as set_meta_mock:
+                            await bot.daily_evening_mailing()
+
+        broadcast_mock.assert_awaited_once()
+        sent_text = broadcast_mock.await_args.args[0]
+        self.assertIn("Расписание на завтра", sent_text)
+        self.assertIn("ПОНЕДЕЛЬНИК", sent_text)
+        set_meta_mock.assert_awaited_once_with("last_daily_sent_date", "2026-03-16")
+
+    async def test_startup_recovery_runs_weekly_preview_on_sunday_after_one_pm(self):
+        fake_now = bot.datetime(2026, 3, 15, 14, 0, tzinfo=bot.MOSCOW_TZ)
+
+        with patch.object(bot, "now_moscow", return_value=fake_now):
+            with patch.object(bot, "check_and_update_schedule", new=AsyncMock()):
+                with patch.object(bot, "weekly_preview_mailing", new=AsyncMock()) as weekly_mock:
+                    with patch.object(bot, "set_metadata", new=AsyncMock()) as set_meta_mock:
+                        with patch.object(bot, "get_metadata", new=AsyncMock(return_value="2026-03-16")):
+                            await bot.startup_recovery()
+
+        weekly_mock.assert_awaited_once_with()
+        set_meta_mock.assert_not_called()
 
 
 if __name__ == "__main__":
