@@ -84,6 +84,8 @@ raspisanie_bot_ait/
 - `BOT_TOKEN`
 - `GROUP_NAME`
 - `ADMIN_IDS`
+- `TELEGRAM_PROXY_URL`
+- `TELEGRAM_API_BASE_URL`
 
 ### `database.py`
 
@@ -120,6 +122,7 @@ raspisanie_bot_ait/
 - получает HTML страницы расписания;
 - извлекает ссылки на файлы;
 - безопасно сохраняет только `pdf`;
+- проверяет allowlist хостов, ручные редиректы, размер и число страниц PDF;
 - защищается от path traversal через имя файла.
 
 ### `parser/schedule_parser.py`
@@ -178,7 +181,7 @@ raspisanie_bot_ait/
 
 ## Переменные окружения
 
-Создайте `.env` на основе `.env.example`.
+Создайте `.env` на основе [.env.example](.env.example). Реальные значения `.env` не должны попадать в Git.
 
 ```env
 BOT_TOKEN=ваш_токен_от_BotFather
@@ -193,32 +196,89 @@ TELEGRAM_API_BASE_URL=
 - `BOT_TOKEN` обязателен.
 - `ADMIN_IDS` — список числовых Telegram ID через запятую.
 - `GROUP_NAME` должен совпадать с названием группы в PDF.
-- `TELEGRAM_PROXY_URL` опционален. Если VPS не может напрямую открыть Telegram API, укажите прокси в формате `socks5://user:password@host:port` или `http://user:password@host:port`. Не коммитьте реальный прокси в репозиторий.
-- `TELEGRAM_API_BASE_URL` опционален. Используйте его для приватного Bot API gateway, например Cloudflare Worker с секретным URL-префиксом. Значение хранится только в server-side `.env`.
+- `TELEGRAM_PROXY_URL` опционален. Используйте его, если VPS может ходить в Telegram только через SOCKS/HTTP-прокси.
+- `TELEGRAM_API_BASE_URL` опционален. Используйте его для приватного HTTPS gateway к Telegram Bot API, например через Cloudflare Worker.
 
-## Установка и запуск
+## Доступ к Telegram API с VPS
 
-### Windows / локальный запуск
+На многих VPS в России прямое соединение с `https://api.telegram.org` не работает. Если бот запускается, но в логах есть `TelegramNetworkError`, `Request timeout error` или polling не стартует, сначала проверьте доступ:
 
 ```bash
+curl -4 -I https://api.telegram.org
+```
+
+Если ответа нет, используйте один из вариантов:
+
+- `TELEGRAM_PROXY_URL=socks5://user:password@host:port`
+- `TELEGRAM_PROXY_URL=http://user:password@host:port`
+- `TELEGRAM_API_BASE_URL=https://your-private-gateway.example/secret-prefix`
+
+`TELEGRAM_PROXY_URL` подходит для обычного SOCKS/HTTP-прокси. Для SOCKS установлен `aiohttp-socks`.
+
+`TELEGRAM_API_BASE_URL` подходит для приватного gateway, который повторяет формат Telegram Bot API:
+
+```bash
+https://your-private-gateway.example/secret-prefix/bot<TOKEN>/<method>
+```
+
+Gateway должен проксировать запросы на `https://api.telegram.org`. URL gateway и прокси-credentials храните только в server-side `.env`. Не добавляйте их в README, issue, PR, systemd unit или историю shell-команд, если команда попадёт в логи.
+
+## Установка и безопасный запуск
+
+Для локальной разработки можно запускать `python main.py` вручную. Для production используйте systemd и отдельного Linux-пользователя.
+
+### Локально на Windows
+
+```powershell
 python -m venv venv
 venv\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+copy .env.example .env
+notepad .env
 python main.py
 ```
 
-### Linux / Debian
+### Локально на Linux
 
 ```bash
 python3.12 -m venv venv
 source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+cp .env.example .env
+nano .env
 python main.py
 ```
 
-## Запуск через systemd
+### Production на VPS
+
+Рекомендуемый layout:
+
+- код: `/opt/raspisanie_bot_ait`;
+- пользователь: `aitbot`;
+- секреты: `/opt/raspisanie_bot_ait/.env`;
+- сервис: `ait-bot.service`.
+
+Базовая установка:
+
+```bash
+useradd --system --create-home --home-dir /opt/raspisanie_bot_ait --shell /usr/sbin/nologin aitbot
+git clone https://github.com/WETQV/raspisanie_bot_ait.git /opt/raspisanie_bot_ait
+cd /opt/raspisanie_bot_ait
+python3.12 -m venv venv
+chown -R aitbot:aitbot /opt/raspisanie_bot_ait
+runuser -u aitbot -- venv/bin/pip install --upgrade pip
+runuser -u aitbot -- venv/bin/pip install -r requirements.txt
+cp .env.example .env
+nano .env
+chown aitbot:aitbot .env
+chmod 600 .env
+```
+
+Не запускайте `python main.py` вручную на сервере, если systemd-сервис уже работает. Два polling-процесса с одним токеном конфликтуют и могут вести себя непредсказуемо.
+
+## Production через systemd
 
 Пример unit-файла:
 
@@ -254,6 +314,33 @@ systemctl start ait-bot
 systemctl status ait-bot
 journalctl -u ait-bot -f
 ```
+
+Безопасная проверка production без ручного запуска бота:
+
+```bash
+systemctl status ait-bot.service --no-pager -l
+journalctl -u ait-bot.service -n 120 --no-pager
+ps -eo pid,user,cmd | grep -E '[/]opt/raspisanie_bot_ait/.*/python|[/]opt/raspisanie_bot_ait/main.py' | grep -v grep
+```
+
+Обновление production:
+
+```bash
+cd /opt/raspisanie_bot_ait
+runuser -u aitbot -- git fetch origin
+runuser -u aitbot -- git reset --hard origin/main
+runuser -u aitbot -- venv/bin/pip install -r requirements.txt
+runuser -u aitbot -- venv/bin/python -m compileall .
+runuser -u aitbot -- venv/bin/python -m unittest discover -s tests -v
+systemctl restart ait-bot.service
+systemctl status ait-bot.service --no-pager -l
+```
+
+Не запускайте на production без явной причины:
+
+- `/update` и `/reparse`;
+- ad-hoc Python-скрипты, которые импортируют `bot.py` и вызывают mailing-функции;
+- параллельный `python main.py` рядом с systemd.
 
 ## База данных
 
@@ -307,30 +394,6 @@ python -m unittest discover -s tests -v
 
 - [DEPLOY_DEBIAN11.md](docs/DEPLOY_DEBIAN11.md)
 - [TEST_SCENARIOS.md](docs/TEST_SCENARIOS.md)
-
-## Состояние на 2026-04-11
-
-Что закрыто:
-
-- Уязвимости из security-аудита исправлены: внешние PDF-ссылки отсекаются allowlist-ом, редиректы валидируются вручную, PDF ограничен по размеру и числу страниц, admin-уведомления экранируют HTML.
-- Секреты остаются вне Git: `.env`, runtime SQLite-файлы, cache и локальные VPS-заметки игнорируются.
-- Production-процесс переведён из `root` в отдельного пользователя `aitbot`, рабочая директория на VPS — `/opt/raspisanie_bot_ait`.
-- Telegram API на VPS работает через server-side `TELEGRAM_API_BASE_URL`; реальный gateway URL хранится только в `.env` на сервере и в локальном ignored-файле `VPS_ACCESS_LOCAL.md`.
-- Бот на VPS стартует через systemd, polling запущен, startup-проверка расписания завершилась без рассылки: файл расписания не изменился.
-
-Что не делать ночью на production:
-
-- Не запускать `python main.py` вручную рядом с systemd-сервисом.
-- Не запускать `/update`, `/reparse` и ad-hoc Python-вызовы mailing-функций без явной цели.
-- Не коммитить реальные значения `BOT_TOKEN`, `TELEGRAM_API_BASE_URL`, `TELEGRAM_PROXY_URL`, SSH-пароли или файлы базы.
-
-Текущая безопасная проверка VPS:
-
-```bash
-systemctl status ait-bot.service --no-pager -l
-journalctl -u ait-bot.service -n 120 --no-pager
-ps -eo pid,user,cmd | grep -E '[/]opt/raspisanie_bot_ait/.*/python|[/]opt/raspisanie_bot_ait/main.py' | grep -v grep
-```
 
 ## Ограничения
 
