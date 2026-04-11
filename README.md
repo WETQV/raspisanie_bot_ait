@@ -185,6 +185,7 @@ BOT_TOKEN=ваш_токен_от_BotFather
 GROUP_NAME=ИСП-3-22
 ADMIN_IDS=Ваш ID телеграм акка (типа 123456789)
 TELEGRAM_PROXY_URL=
+TELEGRAM_API_BASE_URL=
 ```
 
 ### Примечания
@@ -193,6 +194,7 @@ TELEGRAM_PROXY_URL=
 - `ADMIN_IDS` — список числовых Telegram ID через запятую.
 - `GROUP_NAME` должен совпадать с названием группы в PDF.
 - `TELEGRAM_PROXY_URL` опционален. Если VPS не может напрямую открыть Telegram API, укажите прокси в формате `socks5://user:password@host:port` или `http://user:password@host:port`. Не коммитьте реальный прокси в репозиторий.
+- `TELEGRAM_API_BASE_URL` опционален. Используйте его для приватного Bot API gateway, например Cloudflare Worker с секретным URL-префиксом. Значение хранится только в server-side `.env`.
 
 ## Установка и запуск
 

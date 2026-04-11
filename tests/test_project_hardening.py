@@ -81,6 +81,18 @@ class ConfigTests(unittest.TestCase):
 
         self.assertIsNone(config.telegram_proxy_url)
 
+    def test_reads_optional_telegram_api_base_url(self):
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_API_BASE_URL": " https://telegram-gateway.example/secret/ "},
+        ):
+            config = Config.from_env()
+
+        self.assertEqual(
+            config.telegram_api_base_url,
+            "https://telegram-gateway.example/secret",
+        )
+
 
 class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
     async def test_database_connect_is_idempotent(self):

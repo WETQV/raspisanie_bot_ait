@@ -9,6 +9,7 @@ class Config:
     group_name: str
     admin_ids: list[int]
     telegram_proxy_url: str | None = None
+    telegram_api_base_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -25,9 +26,14 @@ class Config:
         if telegram_proxy_url:
             telegram_proxy_url = telegram_proxy_url.strip() or None
 
+        telegram_api_base_url = os.getenv("TELEGRAM_API_BASE_URL")
+        if telegram_api_base_url:
+            telegram_api_base_url = telegram_api_base_url.strip().rstrip("/") or None
+
         return cls(
             token=token,
             group_name=group_name,
             admin_ids=admin_ids,
             telegram_proxy_url=telegram_proxy_url,
+            telegram_api_base_url=telegram_api_base_url,
         )

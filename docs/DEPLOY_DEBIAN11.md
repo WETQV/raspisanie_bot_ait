@@ -56,10 +56,12 @@ BOT_TOKEN=ваш_токен_от_BotFather
 GROUP_NAME=ИСП-3-22
 ADMIN_IDS=735412766,123456789
 TELEGRAM_PROXY_URL=
+TELEGRAM_API_BASE_URL=
 ```
 
 Если токен когда-либо был в открытом доступе, его нужно отозвать через `@BotFather` и выпустить новый.
 Если сервер не достаёт до Telegram API напрямую, заполните `TELEGRAM_PROXY_URL` в `.env`, например `socks5://user:password@host:port`. Реальные данные прокси храните только на сервере.
+Если используете HTTPS gateway вместо SOCKS/HTTP-прокси, заполните `TELEGRAM_API_BASE_URL`, например `https://example.workers.dev/secret-prefix`.
 
 ## 3. Проверка ручным запуском
 
@@ -141,6 +143,7 @@ systemctl start ait-bot
 - `.env` существует и содержит валидный `BOT_TOKEN`.
 - `/update` и `/reparse` работают только для ID из `ADMIN_IDS`.
 - Если используется прокси, `TELEGRAM_PROXY_URL` задан только в server-side `.env` и не попал в Git.
+- Если используется gateway, `TELEGRAM_API_BASE_URL` задан только в server-side `.env` и не попал в Git.
 - Вечерняя рассылка отправляется на следующий учебный день.
 - Файл `bot_database.db` создаётся в корне проекта и принадлежит пользователю `aitbot`.
 - После рестарта бот не должен разгребать старую очередь команд из Telegram.

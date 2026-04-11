@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -36,7 +37,14 @@ PRE_MONDAY_WEEKLY_SENT_KEY = "last_pre_monday_weekly_sent_period"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
-bot_session = AiohttpSession(proxy=config.telegram_proxy_url) if config.telegram_proxy_url else None
+bot_session = None
+if config.telegram_proxy_url or config.telegram_api_base_url:
+    session_kwargs = {}
+    if config.telegram_proxy_url:
+        session_kwargs["proxy"] = config.telegram_proxy_url
+    if config.telegram_api_base_url:
+        session_kwargs["api"] = TelegramAPIServer.from_base(config.telegram_api_base_url)
+    bot_session = AiohttpSession(**session_kwargs)
 bot = Bot(
     token=config.token,
     session=bot_session,
