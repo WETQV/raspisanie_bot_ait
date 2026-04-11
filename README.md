@@ -225,12 +225,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/raspisanie_bot_ait
-ExecStart=/root/raspisanie_bot_ait/venv/bin/python /root/raspisanie_bot_ait/main.py
+User=aitbot
+Group=aitbot
+WorkingDirectory=/opt/raspisanie_bot_ait
+ExecStart=/opt/raspisanie_bot_ait/venv/bin/python /opt/raspisanie_bot_ait/main.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
@@ -267,6 +272,8 @@ journalctl -u ait-bot -f
 - `python-dotenv` — загрузка `.env`
 - `aiofiles` — асинхронная работа с файлами
 - `requests` — вспомогательная HTTP-зависимость
+
+`requirements.txt` хранит закрепленные версии для воспроизводимого деплоя. Для планового обновления зависимостей меняйте `requirements.in`, пересобирайте pinned versions отдельным PR и прогоняйте тесты до выкладки.
 
 ## Проверки
 
