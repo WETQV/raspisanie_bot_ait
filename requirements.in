@@ -1,5 +1,6 @@
 aiogram>=3.17.0
 aiohttp>=3.11.11
+aiohttp-socks>=0.11.0
 beautifulsoup4>=4.12.3
 pdfplumber>=0.11.5
 apscheduler>=3.11.0

@@ -184,6 +184,7 @@ raspisanie_bot_ait/
 BOT_TOKEN=ваш_токен_от_BotFather
 GROUP_NAME=ИСП-3-22
 ADMIN_IDS=Ваш ID телеграм акка (типа 123456789)
+TELEGRAM_PROXY_URL=
 ```
 
 ### Примечания
@@ -191,6 +192,7 @@ ADMIN_IDS=Ваш ID телеграм акка (типа 123456789)
 - `BOT_TOKEN` обязателен.
 - `ADMIN_IDS` — список числовых Telegram ID через запятую.
 - `GROUP_NAME` должен совпадать с названием группы в PDF.
+- `TELEGRAM_PROXY_URL` опционален. Если VPS не может напрямую открыть Telegram API, укажите прокси в формате `socks5://user:password@host:port` или `http://user:password@host:port`. Не коммитьте реальный прокси в репозиторий.
 
 ## Установка и запуск
 
@@ -265,6 +267,7 @@ journalctl -u ait-bot -f
 
 - `aiogram` — Telegram Bot API
 - `aiohttp` — HTTP-запросы
+- `aiohttp-socks` — поддержка HTTP/SOCKS-прокси для Telegram API
 - `aiosqlite` — SQLite
 - `apscheduler` — фоновые задачи
 - `pdfplumber` — чтение PDF
