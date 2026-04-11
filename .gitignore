@@ -1,9 +1,13 @@
 .env
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 __pycache__/
 downloads/
 *.backup
 *.tmp
+.cache/
 .venv/
 venv/
 *.pyc

@@ -308,6 +308,30 @@ python -m unittest discover -s tests -v
 - [DEPLOY_DEBIAN11.md](docs/DEPLOY_DEBIAN11.md)
 - [TEST_SCENARIOS.md](docs/TEST_SCENARIOS.md)
 
+## Состояние на 2026-04-11
+
+Что закрыто:
+
+- Уязвимости из security-аудита исправлены: внешние PDF-ссылки отсекаются allowlist-ом, редиректы валидируются вручную, PDF ограничен по размеру и числу страниц, admin-уведомления экранируют HTML.
+- Секреты остаются вне Git: `.env`, runtime SQLite-файлы, cache и локальные VPS-заметки игнорируются.
+- Production-процесс переведён из `root` в отдельного пользователя `aitbot`, рабочая директория на VPS — `/opt/raspisanie_bot_ait`.
+- Telegram API на VPS работает через server-side `TELEGRAM_API_BASE_URL`; реальный gateway URL хранится только в `.env` на сервере и в локальном ignored-файле `VPS_ACCESS_LOCAL.md`.
+- Бот на VPS стартует через systemd, polling запущен, startup-проверка расписания завершилась без рассылки: файл расписания не изменился.
+
+Что не делать ночью на production:
+
+- Не запускать `python main.py` вручную рядом с systemd-сервисом.
+- Не запускать `/update`, `/reparse` и ad-hoc Python-вызовы mailing-функций без явной цели.
+- Не коммитить реальные значения `BOT_TOKEN`, `TELEGRAM_API_BASE_URL`, `TELEGRAM_PROXY_URL`, SSH-пароли или файлы базы.
+
+Текущая безопасная проверка VPS:
+
+```bash
+systemctl status ait-bot.service --no-pager -l
+journalctl -u ait-bot.service -n 120 --no-pager
+ps -eo pid,user,cmd | grep -E '[/]opt/raspisanie_bot_ait/.*/python|[/]opt/raspisanie_bot_ait/main.py' | grep -v grep
+```
+
 ## Ограничения
 
 - Парсер ориентирован на конкретную структуру PDF с сайта колледжа.
