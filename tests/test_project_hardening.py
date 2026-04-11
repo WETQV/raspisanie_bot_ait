@@ -18,6 +18,7 @@ from bot import (
     should_send_weekly_preview,
     should_skip_daily_evening_mailing,
 )
+from config import Config
 from database import Database
 from parser.schedule_parser import ScheduleParser
 from scraper.link_finder import LinkFinder, is_allowed_schedule_url
@@ -59,6 +60,38 @@ class FakeMetadataDb:
 
     async def set_metadata(self, key, value):
         self.storage[key] = value
+
+
+class ConfigTests(unittest.TestCase):
+    def test_reads_optional_telegram_proxy_url(self):
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_PROXY_URL": " socks5://user:pass@proxy.example:1080 "},
+        ):
+            config = Config.from_env()
+
+        self.assertEqual(config.telegram_proxy_url, "socks5://user:pass@proxy.example:1080")
+
+    def test_blank_telegram_proxy_url_is_ignored(self):
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_PROXY_URL": "   "},
+        ):
+            config = Config.from_env()
+
+        self.assertIsNone(config.telegram_proxy_url)
+
+    def test_reads_optional_telegram_api_base_url(self):
+        with patch.dict(
+            os.environ,
+            {"TELEGRAM_API_BASE_URL": " https://telegram-gateway.example/secret/ "},
+        ):
+            config = Config.from_env()
+
+        self.assertEqual(
+            config.telegram_api_base_url,
+            "https://telegram-gateway.example/secret",
+        )
 
 
 class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
