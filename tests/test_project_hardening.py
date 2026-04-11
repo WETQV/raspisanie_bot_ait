@@ -20,8 +20,14 @@ from bot import (
 )
 from database import Database
 from parser.schedule_parser import ScheduleParser
-from scraper.schedule_scraper import _resolve_download_target
+from scraper.link_finder import LinkFinder, is_allowed_schedule_url
+from scraper.schedule_scraper import (
+    MAX_PDF_SIZE,
+    _content_length_too_large,
+    _resolve_download_target,
+)
 from services.schedule_service import ScheduleService
+from services.schedule_updater import ScheduleUpdater
 
 
 class FakeBot:
@@ -107,6 +113,33 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             _resolve_download_target(Path(download_dir.name), "notes.txt")
 
+    def test_link_finder_rejects_external_absolute_urls(self):
+        finder = LinkFinder("https://aitanapa.ru/raspisanie/")
+
+        self.assertEqual(
+            finder._normalize_url("/download/schedule.pdf"),
+            "https://aitanapa.ru/download/schedule.pdf",
+        )
+        self.assertIsNone(finder._normalize_url("http://127.0.0.1/admin.pdf"))
+        self.assertIsNone(finder._normalize_url("https://evil.example/schedule.pdf"))
+
+    def test_schedule_url_allowlist_requires_https_and_expected_host(self):
+        self.assertTrue(is_allowed_schedule_url("https://aitanapa.ru/file.pdf"))
+        self.assertTrue(is_allowed_schedule_url("https://www.aitanapa.ru/file.pdf"))
+        self.assertFalse(is_allowed_schedule_url("http://aitanapa.ru/file.pdf"))
+        self.assertFalse(is_allowed_schedule_url("https://aitanapa.ru.evil/file.pdf"))
+
+    def test_content_length_limit_rejects_large_pdf(self):
+        response = SimpleNamespace(headers={"Content-Length": str(MAX_PDF_SIZE + 1)})
+
+        self.assertTrue(_content_length_too_large(response))
+
+    def test_content_length_limit_allows_missing_or_invalid_header(self):
+        self.assertFalse(_content_length_too_large(SimpleNamespace(headers={})))
+        self.assertFalse(
+            _content_length_too_large(SimpleNamespace(headers={"Content-Length": "bad"}))
+        )
+
     def test_format_schedule_message_escapes_html(self):
         text = format_schedule_message(
             "ПОНЕДЕЛЬНИК",
@@ -116,6 +149,24 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Программирование &lt;script&gt;", text)
         self.assertIn("2&lt;10&gt;", text)
         self.assertIn("➖➖➖➖➖➖➖➖➖➖", text)
+
+    async def test_parse_error_notification_escapes_exception_text(self):
+        fake_service = SimpleNamespace(notify_admins=AsyncMock())
+        updater = ScheduleUpdater(
+            SimpleNamespace(group_name="ИСП-3-22"),
+            SimpleNamespace(),
+            fake_service,
+        )
+
+        with patch(
+            "services.schedule_updater.ScheduleParser",
+            side_effect=ValueError('<a href="tg://user?id=1">bad</a>'),
+        ):
+            await updater._parse_and_save("bad.pdf", "hash", notify_users=False)
+
+        sent_text = fake_service.notify_admins.await_args.args[0]
+        self.assertIn("&lt;a href=", sent_text)
+        self.assertNotIn("<a href=", sent_text)
 
     def test_next_study_date_skips_sunday(self):
         self.assertEqual(get_next_study_date(date(2026, 3, 14)), date(2026, 3, 16))

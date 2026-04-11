@@ -1,10 +1,26 @@
 """Поиск ссылок на файлы расписания в HTML."""
 import re
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://aitanapa.ru/расписание-занятий/"
+ALLOWED_SCHEDULE_HOSTS = frozenset({"aitanapa.ru", "www.aitanapa.ru"})
+
+
+def is_allowed_schedule_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and host in ALLOWED_SCHEDULE_HOSTS
+
+
+def normalize_schedule_url(base_url: str, url: str) -> str | None:
+    if not url:
+        return None
+    normalized = urljoin(base_url, url)
+    if not is_allowed_schedule_url(normalized):
+        return None
+    return normalized
 
 
 class LinkFinder:
@@ -64,9 +80,7 @@ class LinkFinder:
         return results
 
     def _normalize_url(self, url: str) -> str | None:
-        if not url:
-            return None
-        return urljoin(self.base_url, url)
+        return normalize_schedule_url(self.base_url, url)
 
     def _extract_title(self, elem, soup: BeautifulSoup) -> str:
         container = elem.find_parent("div", class_="w3eden") or elem.find_parent(

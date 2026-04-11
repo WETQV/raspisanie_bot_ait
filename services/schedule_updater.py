@@ -1,4 +1,5 @@
 """Schedule refresh and update logic."""
+import html
 import logging
 import re
 from datetime import datetime
@@ -110,7 +111,7 @@ class ScheduleUpdater:
         except Exception as exc:
             logger.exception("PDF parsing failed")
             await self.service.notify_admins(
-                f"⚠️ Ошибка парсинга: {exc}",
+                f"⚠️ Ошибка парсинга: {html.escape(str(exc), quote=False)}",
                 "parse_failed",
                 THROTTLE_LONG,
             )

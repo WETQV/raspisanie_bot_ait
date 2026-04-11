@@ -37,13 +37,15 @@ python3.12 --version
 ## 2. Подготовка проекта
 
 ```bash
-git clone https://github.com/WETQV/raspisanie_ait_bot.git /root/raspisanie_bot_ait
-cd /root/raspisanie_bot_ait
-python3.12 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-cp .env.example .env
+adduser --system --group --home /opt/raspisanie_bot_ait aitbot
+git clone https://github.com/WETQV/raspisanie_ait_bot.git /opt/raspisanie_bot_ait
+chown -R aitbot:aitbot /opt/raspisanie_bot_ait
+cd /opt/raspisanie_bot_ait
+sudo -u aitbot python3.12 -m venv venv
+sudo -u aitbot /opt/raspisanie_bot_ait/venv/bin/pip install --upgrade pip
+sudo -u aitbot /opt/raspisanie_bot_ait/venv/bin/pip install -r requirements.txt
+sudo -u aitbot cp .env.example .env
+chmod 600 .env
 nano .env
 ```
 
@@ -60,10 +62,12 @@ ADMIN_IDS=735412766,123456789
 ## 3. Проверка ручным запуском
 
 ```bash
-cd /root/raspisanie_bot_ait
+cd /opt/raspisanie_bot_ait
 source venv/bin/activate
 python main.py
 ```
+
+На сервере с уже работающим systemd-сервисом не запускайте `python main.py` вручную параллельно сервису: получится второй polling-процесс с тем же токеном. Для проверки production используйте `systemctl status`, `journalctl` и команды в Telegram после перезапуска сервиса.
 
 Проверь в Telegram:
 
@@ -84,12 +88,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/raspisanie_bot_ait
-ExecStart=/root/raspisanie_bot_ait/venv/bin/python /root/raspisanie_bot_ait/main.py
+User=aitbot
+Group=aitbot
+WorkingDirectory=/opt/raspisanie_bot_ait
+ExecStart=/opt/raspisanie_bot_ait/venv/bin/python /opt/raspisanie_bot_ait/main.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
@@ -116,10 +125,11 @@ journalctl -u ait-bot -f
 
 ```bash
 systemctl stop ait-bot
-cd /root/raspisanie_bot_ait
+cp /opt/raspisanie_bot_ait/bot_database.db /root/backups/bot_database_$(date +%Y%m%d_%H%M%S).db
+cd /opt/raspisanie_bot_ait
 git pull
-source venv/bin/activate
-pip install -r requirements.txt --upgrade
+chown -R aitbot:aitbot /opt/raspisanie_bot_ait
+sudo -u aitbot /opt/raspisanie_bot_ait/venv/bin/pip install -r requirements.txt
 systemctl start ait-bot
 ```
 
@@ -129,11 +139,12 @@ systemctl start ait-bot
 - `.env` существует и содержит валидный `BOT_TOKEN`.
 - `/update` и `/reparse` работают только для ID из `ADMIN_IDS`.
 - Вечерняя рассылка отправляется на следующий учебный день.
-- Файл `bot_database.db` создаётся в корне проекта.
+- Файл `bot_database.db` создаётся в корне проекта и принадлежит пользователю `aitbot`.
 - После рестарта бот не должен разгребать старую очередь команд из Telegram.
 
 ## 7. Резервное копирование базы
 
 ```bash
-cp /root/raspisanie_bot_ait/bot_database.db /root/backups/bot_database_$(date +%Y%m%d).db
+mkdir -p /root/backups
+cp /opt/raspisanie_bot_ait/bot_database.db /root/backups/bot_database_$(date +%Y%m%d).db
 ```
