@@ -138,7 +138,7 @@ class Database:
         if future_periods:
             return min(future_periods, key=lambda item: item[0])[1]
 
-        return max(parsed_periods, key=lambda item: item[1])[2]
+        return None
 
     async def add_chat(
         self,

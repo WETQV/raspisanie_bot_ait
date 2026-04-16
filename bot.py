@@ -93,6 +93,27 @@ def get_date_from_period(period_str: str, day_name: str) -> str:
     return "?.?.????"
 
 
+def parse_period_bounds(period_str: str) -> tuple[date, date] | tuple[None, None]:
+    try:
+        start_date_str, end_date_str = [part.strip() for part in period_str.split("-", 1)]
+        start_date = datetime.strptime(start_date_str, "%d.%m.%Y").date()
+        end_date = datetime.strptime(end_date_str, "%d.%m.%Y").date()
+        return start_date, end_date
+    except (AttributeError, ValueError, IndexError):
+        return None, None
+
+
+def period_covers_target_date(period_str: str | None, target_date: date) -> bool:
+    if not period_str:
+        return False
+
+    start_date, end_date = parse_period_bounds(period_str)
+    if not start_date or not end_date:
+        return False
+
+    return start_date <= target_date <= end_date
+
+
 def escape_html(value: object) -> str:
     return html.escape(str(value), quote=False)
 
@@ -199,6 +220,8 @@ async def get_schedule_for_target_date(target_date: date) -> tuple[str, Optional
         day_name,
         target_date=target_date,
     )
+    if not period_covers_target_date(period, target_date):
+        return day_name, None, []
     return day_name, period, lessons
 
 
@@ -364,8 +387,8 @@ async def daily_evening_mailing() -> None:
     else:
         await notify_admins(
             "⚠️ Не найдено расписание для вечерней рассылки.",
-            "daily_missing",
-            180,
+            f"daily_missing:{target_date.isoformat()}",
+            24 * 60,
         )
 
 
@@ -375,8 +398,8 @@ async def weekly_preview_mailing(target_date: date | None = None) -> None:
     if not period or not monday_lessons:
         await notify_admins(
             "⚠️ Не удалось собрать воскресную недельную рассылку.",
-            "weekly_preview_missing",
-            180,
+            f"weekly_preview_missing:{target_date.isoformat()}",
+            24 * 60,
         )
         return
 
@@ -384,8 +407,8 @@ async def weekly_preview_mailing(target_date: date | None = None) -> None:
     if not any(day["lessons"] for day in weekly_schedule):
         await notify_admins(
             "⚠️ В БД нет недельного расписания для воскресной рассылки.",
-            "weekly_preview_empty",
-            180,
+            f"weekly_preview_empty:{period}",
+            24 * 60,
         )
         return
 

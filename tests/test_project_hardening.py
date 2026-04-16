@@ -15,6 +15,7 @@ from bot import (
     format_schedule_message,
     get_next_study_date,
     is_admin_message,
+    period_covers_target_date,
     should_send_weekly_preview,
     should_skip_daily_evening_mailing,
 )
@@ -131,6 +132,25 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(monday_lessons[0][3], "Информатика")
         await db.close()
 
+    async def test_database_does_not_return_expired_period_for_future_target_date(self):
+        db = Database(":memory:")
+        await db.connect()
+
+        schedule = [
+            {"day": "ПОНЕДЕЛЬНИК", "lessons": [{"num": 1, "time": "08:00-09:20", "subject": "Информатика", "room": "3.05"}]},
+        ]
+        await db.save_schedule("ИСП-3-22", "17.03.2026-23.03.2026", schedule)
+
+        period, lessons = await db.get_schedule_for_day(
+            "ИСП-3-22",
+            "ПОНЕДЕЛЬНИК",
+            target_date=date(2026, 3, 30),
+        )
+
+        self.assertIsNone(period)
+        self.assertEqual(lessons, [])
+        await db.close()
+
     def test_resolve_download_target_blocks_path_traversal(self):
         download_dir = tempfile.TemporaryDirectory()
         self.addCleanup(download_dir.cleanup)
@@ -211,6 +231,14 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
     def test_should_skip_daily_evening_mailing_on_saturday_only(self):
         self.assertTrue(should_skip_daily_evening_mailing(date(2026, 3, 14)))
         self.assertFalse(should_skip_daily_evening_mailing(date(2026, 3, 15)))
+
+    def test_period_covers_target_date_rejects_expired_period(self):
+        self.assertFalse(
+            period_covers_target_date("17.03.2026-23.03.2026", date(2026, 3, 30))
+        )
+        self.assertTrue(
+            period_covers_target_date("17.03.2026-23.03.2026", date(2026, 3, 17))
+        )
 
     def test_manual_update_admin_check(self):
         admin_message = SimpleNamespace(from_user=SimpleNamespace(id=111))
@@ -330,6 +358,44 @@ class ProjectHardeningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Расписание на завтра", sent_text)
         self.assertIn("ПОНЕДЕЛЬНИК", sent_text)
         set_meta_mock.assert_awaited_once_with("last_daily_sent_date", "2026-03-16")
+
+    async def test_daily_evening_mailing_notifies_admins_when_only_expired_period_exists(self):
+        fake_now = bot.datetime(2026, 3, 29, 19, 0, tzinfo=bot.MOSCOW_TZ)
+
+        with patch.object(bot, "now_moscow", return_value=fake_now):
+            with patch.object(bot, "get_metadata", new=AsyncMock(return_value=None)):
+                with patch.object(
+                    bot,
+                    "get_schedule_for_target_date",
+                    new=AsyncMock(return_value=("ПОНЕДЕЛЬНИК", None, [])),
+                ):
+                    with patch.object(bot, "broadcast_message", new=AsyncMock()) as broadcast_mock:
+                        with patch.object(bot, "set_metadata", new=AsyncMock()) as set_meta_mock:
+                            with patch.object(bot, "notify_admins", new=AsyncMock()) as notify_mock:
+                                await bot.daily_evening_mailing()
+
+        broadcast_mock.assert_not_awaited()
+        set_meta_mock.assert_not_awaited()
+        notify_mock.assert_awaited_once()
+        self.assertEqual(
+            notify_mock.await_args.args[1],
+            "daily_missing:2026-03-30",
+        )
+
+    async def test_weekly_preview_mailing_notifies_admins_when_period_is_missing(self):
+        with patch.object(
+            bot,
+            "get_schedule_for_target_date",
+            new=AsyncMock(return_value=("ПОНЕДЕЛЬНИК", None, [])),
+        ):
+            with patch.object(bot, "notify_admins", new=AsyncMock()) as notify_mock:
+                await bot.weekly_preview_mailing(date(2026, 3, 30))
+
+        notify_mock.assert_awaited_once()
+        self.assertEqual(
+            notify_mock.await_args.args[1],
+            "weekly_preview_missing:2026-03-30",
+        )
 
     async def test_startup_recovery_runs_weekly_preview_on_sunday_after_one_pm(self):
         fake_now = bot.datetime(2026, 3, 15, 14, 0, tzinfo=bot.MOSCOW_TZ)
